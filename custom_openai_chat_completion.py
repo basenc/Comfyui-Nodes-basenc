@@ -373,4 +373,4 @@ class ChatMessagesCreate(IO.ComfyNode):
             message["tool_call_id"] = tc_id
 
         messages.append(message)
-        return IO.NodeOutput(json.dumps(messages))
+        return IO.NodeOutput(json.dumps(messages, indent=2))
