@@ -1,0 +1,14 @@
+[project]
+name = "Comfyui-Nodes-basenc"
+description = ""
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = ["jmespath", "python-dotenv", "openai"]
+
+[project.urls]
+Repository = "https://github.com/basenc/Comfyui-Nodes-basenc"
+
+[tool.comfy]
+PublisherId = "basenc"
+DisplayName = "Comfyui-Nodes-basenc"
+Icon = ""
