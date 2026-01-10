@@ -1,10 +1,14 @@
 from comfy_api.latest import ComfyExtension
 from typing_extensions import override
 
-from .custom_openai_chat_completion import ChatMessagesCreate, CustomOpenAIChatCompletion
+from .custom_openai_chat_completion import (
+    ChatMessagesCreate,
+    CustomOpenAIChatCompletion,
+)
 from .env_var_node import EnvVarNode
 from .eval_any import Eval
 from .json_path_select import JSONPathSelect
+from .rescale_to_dimensions import RescaleToDimensions
 from .wan_video_size import WanVideoSize
 
 
@@ -18,6 +22,7 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             EnvVarNode,
             Eval,
             WanVideoSize,
+            RescaleToDimensions,
         ]
 
 
