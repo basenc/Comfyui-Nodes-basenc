@@ -1,6 +1,7 @@
 from comfy_api.latest import ComfyExtension
 from typing_extensions import override
 
+from . import api_routes
 from .custom_openai_chat_completion import (
     ChatMessagesCreate,
     CustomOpenAIChatCompletion,
@@ -10,6 +11,8 @@ from .eval_any import Eval
 from .json_path_select import JSONPathSelect
 from .rescale_to_dimensions import RescaleToDimensions
 from .wan_video_size import WanVideoSize
+
+WEB_DIRECTORY = "./web"
 
 
 class CustomJsonOpenAIExtension(ComfyExtension):
