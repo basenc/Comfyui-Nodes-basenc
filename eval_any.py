@@ -14,7 +14,7 @@ class Eval(IO.ComfyNode):
                 IO.String.Input(
                     "expression",
                     default="value",
-                    multiline=False,
+                    multiline=True,
                     tooltip="Python expression. `x` refer to the input.",
                 ),
                 any_type.Input(
