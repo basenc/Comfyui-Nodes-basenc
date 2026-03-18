@@ -9,6 +9,7 @@ from .custom_openai_chat_completion import (
 from .env_var_node import EnvVarNode
 from .eval_any import Eval
 from .json_path_select import JSONPathSelect
+from .dimensions_preset_picker import DimensionsPresetPicker
 from .rescale_to_dimensions import RescaleToDimensions
 from .wan_video_size import WanVideoSize
 
@@ -25,6 +26,7 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             EnvVarNode,
             Eval,
             WanVideoSize,
+            DimensionsPresetPicker,
             RescaleToDimensions,
         ]
 
