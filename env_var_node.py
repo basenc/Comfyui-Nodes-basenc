@@ -6,6 +6,14 @@ from comfy_api.latest import io
 from dotenv import dotenv_values
 
 
+def available_env_keys() -> list[str]:
+    keys: set[str] = set(os.environ.keys())
+    env_file = Path(__file__).resolve().parent.parent.parent / ".env"
+    if env_file.exists():
+        keys.update(dotenv_values(env_file).keys())
+    return sorted(keys)
+
+
 class EnvVarNode(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -14,7 +22,11 @@ class EnvVarNode(io.ComfyNode):
             display_name="Environment Variable",
             category="utils",
             inputs=[
-                io.Combo.Input("env_key", default="", options=[""]),
+                io.Combo.Input(
+                    "env_key",
+                    default="",
+                    options=["", *available_env_keys()],
+                ),
                 io.String.Input(
                     "default_value",
                     default="",
