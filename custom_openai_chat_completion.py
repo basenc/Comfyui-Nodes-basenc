@@ -5,45 +5,43 @@ from typing import Any, Dict, List
 from dotenv import load_dotenv
 from openai import OpenAI
 
+import comfy.model_management
 from comfy_api.latest import IO
 
 load_dotenv()
 
 
-class CustomOpenAIChatCompletion(IO.ComfyNode):
+class CustomOpenAIResponse(IO.ComfyNode):
     @classmethod
     def define_schema(cls) -> IO.Schema:
         return IO.Schema(
-            node_id="CustomOpenAIChatCompletion",
-            display_name="Custom OpenAI Chat Completion",
+            node_id="CustomOpenAIResponse",
+            display_name="OpenAI Response",
             category="api node/text/OpenAI",
-            description=(
-                "Send a raw `messages` array to a chat completions endpoint with a custom "
-                "API base URL and API key."
-            ),
+            description="Send input items to OpenAI Responses API.",
             inputs=[
                 IO.String.Input(
                     "api_base",
                     default="https://api.openai.com/v1",
-                    tooltip="Base URL for the OpenAI-compatible API (no trailing slash needed).",
+                    tooltip="Base URL for the OpenAI-compatible API.",
                 ),
                 IO.String.Input(
                     "api_key",
                     default="",
-                    tooltip="API key used for the Authorization header.",
+                    tooltip="API key for Authorization.",
                 ),
                 IO.String.Input(
                     "model",
-                    default="gpt-4o-mini",
-                    tooltip="Model name to send to the chat completion endpoint.",
+                    default="",
+                    tooltip="Model name.",
                 ),
                 IO.String.Input(
-                    "messages_json",
+                    "input_json",
                     multiline=True,
                     optional=False,
                     socketless=False,
                     force_input=True,
-                    tooltip="Raw JSON array of chat messages to send as the `messages` field.",
+                    tooltip="JSON array of Responses API input items.",
                 ),
                 IO.String.Input(
                     "tools_json",
@@ -52,7 +50,7 @@ class CustomOpenAIChatCompletion(IO.ComfyNode):
                     optional=True,
                     socketless=False,
                     force_input=False,
-                    tooltip="Optional tools array JSON.",
+                    tooltip="Tools array JSON.",
                 ),
                 IO.Float.Input(
                     "temperature",
@@ -60,22 +58,22 @@ class CustomOpenAIChatCompletion(IO.ComfyNode):
                     min=0.0,
                     max=2.0,
                     step=0.01,
-                    optional=False,
-                    tooltip="Optional temperature value to include in the request.",
+                    optional=True,
+                    tooltip="Sampling temperature.",
                 ),
                 IO.Int.Input(
-                    "max_tokens",
+                    "max_output_tokens",
                     default=1024,
                     min=0,
-                    optional=False,
-                    tooltip="Optional max_tokens value. Set to 0 to omit.",
+                    optional=True,
+                    tooltip="Max output tokens. 0 to omit.",
                 ),
                 IO.Float.Input(
                     "timeout_seconds",
                     default=60.0,
                     min=1.0,
                     step=1.0,
-                    optional=False,
+                    optional=True,
                     tooltip="Request timeout in seconds.",
                 ),
             ],
@@ -83,126 +81,20 @@ class CustomOpenAIChatCompletion(IO.ComfyNode):
                 IO.String.Output(
                     id="response_text",
                     display_name="Response Text",
-                    tooltip="First choice message content from the API response.",
-                ),
-                IO.String.Output(
-                    id="raw_json",
-                    display_name="Response JSON",
-                    tooltip="Full JSON response from the API.",
+                    tooltip="Aggregated output text.",
                 ),
                 IO.String.Output(
                     id="tool_calls_json",
                     display_name="Tool Calls JSON",
-                    tooltip="tool_calls array from the first choice, if any.",
+                    tooltip="function_call items from output.",
                 ),
                 IO.String.Output(
-                    id="messages_json_out",
-                    display_name="Messages JSON",
-                    tooltip="Messages array you can feed to the next request (includes assistant message from this completion).",
+                    id="output_json",
+                    display_name="Output JSON",
+                    tooltip="Input + Response conversation JSON.",
                 ),
             ],
         )
-
-    @classmethod
-    def _extract_text(cls, data: Dict[str, Any]) -> str:
-        # --- Responses API ---
-        if "output" in data or "output_text" in data:
-            if "output_text" in data:
-                return data["output_text"] or ""
-
-            parts = []
-            for item in data.get("output", []):
-                t = item.get("type")
-
-                # Skip non-text types
-                if t in {
-                    "function_call",
-                    "tool_call",
-                    "mcp_call",
-                    "mcp_approval_request",
-                    "mcp_list_tools",
-                    "tool_output",
-                    "reasoning",
-                    "code_interpreter",
-                    "computer_use",
-                }:
-                    continue
-
-                # Message → content → text chunks
-                if t == "message":
-                    for c in item.get("content", []):
-                        if c.get("type") in {"output_text", "input_text"}:
-                            if c.get("text"):
-                                parts.append(c["text"])
-
-                # Standalone output_text type
-                if t == "output_text" and item.get("text"):
-                    parts.append(item["text"])
-
-            return "".join(parts)
-
-        # --- Chat Completions ---
-        if data.get("object") == "chat.completion":
-            choices = data.get("choices") or []
-            if not choices:
-                return ""
-            return choices[0].get("message", {}).get("content") or ""
-
-        # --- Legacy Completions ---
-        choices = data.get("choices")
-        if choices and isinstance(choices, list):
-            return choices[0].get("text", "") or ""
-
-        return ""
-
-    @classmethod
-    def _extract_tool_calls(cls, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        calls = []
-
-        # --- Responses API ---
-        if "output" in data:
-            for item in data["output"]:
-                t = item.get("type")
-                if t in {"function_call", "tool_call", "mcp_call"}:
-                    calls.append(
-                        {
-                            "type": t,
-                            "id": item.get("id") or item.get("call_id"),
-                            "function": {
-                                "name": item.get("function", {}).get("name", ""),
-                                "arguments": item.get("function", {}).get(
-                                    "arguments", ""
-                                ),
-                            },
-                        }
-                    )
-            return calls
-
-        # --- Chat Completions ---
-        if data.get("object") == "chat.completion":
-            choices = data.get("choices") or []
-            if not choices:
-                return []
-
-            msg = choices[0].get("message", {})
-            tcs = msg.get("tool_calls") or []
-
-            for tc in tcs:
-                fn = tc.get("function", {})
-                calls.append(
-                    {
-                        "type": tc.get("type", "function"),
-                        "id": tc.get("id"),
-                        "function": {
-                            "name": fn.get("name", ""),
-                            "arguments": fn.get("arguments", ""),
-                        },
-                    }
-                )
-            return calls
-
-        # --- Legacy Completions (none) ---
-        return []
 
     @classmethod
     def execute(
@@ -210,97 +102,86 @@ class CustomOpenAIChatCompletion(IO.ComfyNode):
         api_base: str,
         api_key: str,
         model: str,
-        messages_json: str | None,
+        input_json: str | None,
         tools_json: str = "[]",
         temperature: float = 1.0,
-        max_tokens: int = 256,
+        max_output_tokens: int = 1024,
         timeout_seconds: float = 60.0,
     ) -> IO.NodeOutput:
+        api_key = api_key or os.environ["OPENAI_API_KEY"]
         if not api_key:
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            raise ValueError(
-                "API key is required; provide it via input or OPENAI_API_KEY."
-            )
+            raise ValueError("`api_key` is required.")
 
-        if not messages_json:
-            raise ValueError(
-                "`messages_json` is required; provide a JSON-encoded non-empty list of messages."
-            )
-        messages = json.loads(messages_json)
-        if not isinstance(messages, list) or len(messages) == 0:
-            raise ValueError(
-                "`messages_json` must decode to a non-empty list of messages."
-            )
+        if not model:
+            raise ValueError("`model` is required.")
+
+        if not input_json:
+            raise ValueError("`input_json` is required.")
+
+        input_items = json.loads(input_json)
+        if not isinstance(input_items, list) or not input_items:
+            raise ValueError("`input_json` must decode to a non-empty list.")
 
         tools = json.loads(tools_json) if tools_json else []
 
-        base = api_base.rstrip("/").removesuffix("/chat/completions")
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "temperature": temperature,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if max_output_tokens > 0:
+            kwargs["max_output_tokens"] = max_output_tokens
 
-        client = OpenAI(api_key=api_key, base_url=base)
-
-        completion = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            timeout=timeout_seconds,
-            tools=tools if tools else None,
-            max_tokens=max_tokens if max_tokens > 0 else None,
+        client = OpenAI(
+            api_key=api_key,
+            base_url=api_base.rstrip("/").removesuffix("/responses"),
         )
 
-        data: Dict[str, Any] = completion.model_dump()
-
-        response_text = cls._extract_text(data)
-        tool_calls = cls._extract_tool_calls(data)
-        tool_calls_json = json.dumps(tool_calls, indent=2)
-        raw_json = json.dumps(data, indent=2)
-
-        messages_out = list(messages)
-        messages_out.append(
-            {
-                "role": "assistant",
-                **(
-                    {"content": [{"type": "text", "text": response_text}]}
-                    if response_text
-                    else {}
-                ),
-                **({"tool_calls": tool_calls} if tool_calls else {}),
-            }
-        )
-
-        messages_json_out = json.dumps(messages_out, indent=2)
+        data = None
+        for event in client.responses.create(stream=True, timeout=timeout_seconds, **kwargs):
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            if event.type == "response.completed":
+                data = event.response.model_dump()
 
         return IO.NodeOutput(
-            response_text, raw_json, tool_calls_json, messages_json_out
+            "".join(
+                c["text"]
+                for item in data["output"] if item["type"] == "message"
+                for c in item["content"] if c["type"] == "output_text"
+            ),
+            json.dumps(
+                [item for item in data["output"] if item["type"] == "function_call"],
+                indent=2,
+            ),
+            json.dumps(list(input_items) + data["output"], indent=2),
         )
 
 
-# --- Message builder nodes -------------------------------------------------
-
-
-class ChatMessagesCreate(IO.ComfyNode):
+class ResponseInputAppend(IO.ComfyNode):
     @classmethod
     def define_schema(cls) -> IO.Schema:
         return IO.Schema(
-            node_id="ChatMessagesCreate",
-            display_name="Chat Message Append",
+            node_id="ResponseInputAppend",
+            display_name="Response Input Append",
             category="api node/text/OpenAI",
-            description="Append one message to an existing messages JSON array (chain multiple of these).",
+            description="Append one input item to a Responses API input array.",
             inputs=[
                 IO.String.Input(
-                    "messages_json",
+                    "input_json",
                     default="[]",
                     multiline=True,
                     socketless=False,
                     optional=True,
                     force_input=True,
-                    tooltip="Existing messages JSON array; leave as [] to start a new one.",
+                    tooltip="Existing input JSON array.",
                 ),
                 IO.Combo.Input(
                     "role",
-                    options=["user", "system", "assistant", "tool"],
+                    options=["system", "user", "developer", "function_call_output"],
                     default="user",
-                    tooltip="Role for this message.",
+                    tooltip="Role or type for this input item.",
                 ),
                 IO.String.Input(
                     "content",
@@ -308,19 +189,19 @@ class ChatMessagesCreate(IO.ComfyNode):
                     multiline=True,
                     socketless=True,
                     force_input=False,
-                    tooltip="Message text content (prompt field).",
+                    tooltip="Text content or function call output.",
                 ),
                 IO.Image.Input(
                     "image",
                     optional=True,
-                    tooltip="Optional image tensor to include (encoded as data URI).",
+                    tooltip="Optional image tensor.",
                 ),
             ],
             outputs=[
                 IO.String.Output(
-                    id="messages_json_out",
-                    display_name="Messages JSON",
-                    tooltip="JSON array of messages.",
+                    id="input_json",
+                    display_name="Input JSON",
+                    tooltip="JSON array of input items.",
                 ),
             ],
         )
@@ -328,49 +209,45 @@ class ChatMessagesCreate(IO.ComfyNode):
     @classmethod
     def execute(
         cls,
-        messages_json: str = "[]",
+        input_json: str = "[]",
         role: str = "user",
         content: str = "",
         image=None,
     ) -> IO.NodeOutput:
         from comfy_api_nodes.util.conversions import tensor_to_data_uri
 
-        messages = list(json.loads(messages_json)) if messages_json else []
+        items = list(json.loads(input_json)) if input_json else []
+
+        if role == "function_call_output":
+            call_id = next(
+                (
+                    item["call_id"]
+                    for item in reversed(items)
+                    if "type" in item and item["type"] == "function_call"
+                ),
+                None,
+            )
+            if not call_id:
+                raise ValueError(
+                    "function_call_output requires a preceding function_call item."
+                )
+            items.append(
+                {"type": "function_call_output", "call_id": call_id, "output": content}
+            )
+            return IO.NodeOutput(json.dumps(items, indent=2))
 
         content_parts: List[Dict[str, Any]] = []
         if content:
-            content_parts.append({"type": "text", "text": content})
+            content_parts.append({"type": "input_text", "text": content})
 
         if image is not None:
-            data_uri = tensor_to_data_uri(image, mime_type="image/png")
             content_parts.append(
-                {"type": "image_url", "image_url": {"url": data_uri, "detail": "auto"}}
+                {
+                    "type": "input_image",
+                    "image_url": tensor_to_data_uri(image, mime_type="image/png"),
+                    "detail": "auto",
+                }
             )
 
-        message_content: Any = (
-            content_parts
-            if content_parts
-            else ([{"type": "text", "text": content}] if content else [])
-        )
-
-        message: Dict[str, Any] = {"role": role, "content": message_content}
-        if role == "tool":
-            tc_id = ""
-            for prev in reversed(messages):
-                if prev.get("role") != "assistant":
-                    continue
-                tc_list = prev.get("tool_calls")
-                if isinstance(tc_list, list) and tc_list:
-                    last_call = tc_list[-1]
-                    if isinstance(last_call, dict):
-                        tc_id = last_call.get("id") or last_call.get("call_id") or ""
-                    if tc_id:
-                        break
-            if not tc_id:
-                raise ValueError(
-                    "role=tool requires an assistant tool_call upstream; none found."
-                )
-            message["tool_call_id"] = tc_id
-
-        messages.append(message)
-        return IO.NodeOutput(json.dumps(messages, indent=2))
+        items.append({"role": role, "content": content_parts or content})
+        return IO.NodeOutput(json.dumps(items, indent=2))

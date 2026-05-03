@@ -3,8 +3,8 @@ from typing_extensions import override
 
 from . import api_routes
 from .custom_openai_chat_completion import (
-    ChatMessagesCreate,
-    CustomOpenAIChatCompletion,
+    CustomOpenAIResponse,
+    ResponseInputAppend,
 )
 from .env_var_node import EnvVarNode
 from .eval_any import Eval
@@ -21,8 +21,8 @@ class CustomJsonOpenAIExtension(ComfyExtension):
     async def get_node_list(self) -> list[type]:
         return [
             JSONPathSelect,
-            CustomOpenAIChatCompletion,
-            ChatMessagesCreate,
+            CustomOpenAIResponse,
+            ResponseInputAppend,
             EnvVarNode,
             Eval,
             WanVideoSize,
