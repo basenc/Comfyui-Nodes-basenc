@@ -8,9 +8,15 @@ from ai.providers.openai import (
     OpenAIResponsesProtocol,
 )
 from dotenv import load_dotenv
+from torch import Tensor
 
 import comfy.model_management
 from comfy_api.latest import IO
+from comfy_api_nodes.util.conversions import (
+    audio_to_base64_string,
+    tensor_to_data_uri,
+    video_to_base64_string,
+)
 
 load_dotenv()
 
@@ -76,6 +82,45 @@ def _dump_messages(messages: list[ai.messages.Message]) -> str:
     )
 
 
+def _tool_result(
+    messages: list[ai.messages.Message], content: str
+) -> ai.messages.Message:
+    call = next(
+        (
+            part
+            for message in reversed(messages)
+            for part in reversed(message.tool_calls)
+        ),
+        None,
+    )
+    if not call:
+        raise ValueError("A tool message requires a preceding tool call.")
+    return ai.tool_message(
+        tool_call_id=call.tool_call_id,
+        result=content,
+        tool_name=call.tool_name,
+    )
+
+
+def _media_part(
+    attachment: IO.Image.Type | IO.Video.Type | IO.Audio.Type,
+) -> ai.messages.FilePart:
+    if isinstance(attachment, Tensor):
+        return ai.file_part(
+            tensor_to_data_uri(attachment, mime_type="image/png"),
+            media_type="image/png",
+        )
+    if isinstance(attachment, dict):
+        return ai.file_part(
+            f"data:audio/mp4;base64,{audio_to_base64_string(attachment)}",
+            media_type="audio/mp4",
+        )
+    return ai.file_part(
+        f"data:video/mp4;base64,{video_to_base64_string(attachment)}",
+        media_type="video/mp4",
+    )
+
+
 async def _run_completion(
     api_base: str,
     api_key: str,
@@ -85,6 +130,7 @@ async def _run_completion(
     temperature: float,
     max_output_tokens: int,
     tool_choice: str,
+    extra_body: str,
     protocol: OpenAIResponsesProtocol | OpenAIChatCompletionsProtocol,
 ) -> ai.messages.Message:
     provider = ai.get_provider(
@@ -111,6 +157,7 @@ async def _run_completion(
             if tools and tool_choice != "auto"
             else None
         ),
+        extra_body=json.loads(extra_body) if extra_body else None,
     )
     try:
         async with ai.stream(
@@ -167,6 +214,13 @@ class CustomOpenAIResponse(IO.ComfyNode):
                     force_input=False,
                     tooltip="Tools array JSON: AI SDK tools or OpenAI function/tool definitions.",
                 ),
+                IO.String.Input(
+                    "extra_body",
+                    default="{}",
+                    multiline=True,
+                    optional=True,
+                    tooltip="Provider-specific request body fields as a JSON object.",
+                ),
                 IO.Combo.Input(
                     "tool_choice",
                     options=["auto", "none", "required"],
@@ -221,6 +275,7 @@ class CustomOpenAIResponse(IO.ComfyNode):
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
         tool_choice: str = "auto",
+        extra_body: str = "{}",
     ) -> IO.NodeOutput:
         api_key, messages, tools = _parse_request(
             api_key, model, messages_json, tools_json
@@ -235,6 +290,7 @@ class CustomOpenAIResponse(IO.ComfyNode):
             temperature,
             max_output_tokens,
             tool_choice,
+            extra_body,
             OpenAIResponsesProtocol(),
         )
 
@@ -283,10 +339,18 @@ class MessageAppend(IO.ComfyNode):
                     force_input=False,
                     tooltip="Text content or tool result.",
                 ),
-                IO.Image.Input(
-                    "image",
-                    optional=True,
-                    tooltip="Optional image tensor.",
+                IO.Autogrow.Input(
+                    "media",
+                    template=IO.Autogrow.TemplatePrefix(
+                        input=IO.MultiType.Input(
+                            "media",
+                            types=[IO.Image, IO.Video, IO.Audio],
+                            tooltip="Image, video, or audio to include in the message.",
+                        ),
+                        prefix="media",
+                        min=0,
+                    ),
+                    tooltip="Optional image, video, and audio attachments.",
                 ),
             ],
             outputs=[
@@ -304,10 +368,8 @@ class MessageAppend(IO.ComfyNode):
         messages_json: str = "[]",
         role: str = "user",
         content: str = "",
-        image=None,
+        media: IO.Autogrow.Type | None = None,
     ) -> IO.NodeOutput:
-        from comfy_api_nodes.util.conversions import tensor_to_data_uri
-
         messages = (
             [ai.messages.Message.model_validate(item) for item in json.loads(messages_json)]
             if messages_json
@@ -315,37 +377,14 @@ class MessageAppend(IO.ComfyNode):
         )
 
         if role == "tool":
-            call = next(
-                (
-                    part
-                    for message in reversed(messages)
-                    for part in reversed(message.tool_calls)
-                ),
-                None,
-            )
-            if not call:
-                raise ValueError(
-                    "A tool message requires a preceding tool call."
-                )
-            messages.append(
-                ai.tool_message(
-                    tool_call_id=call.tool_call_id,
-                    result=content,
-                    tool_name=call.tool_name,
-                )
-            )
+            messages.append(_tool_result(messages, content))
             return IO.NodeOutput(_dump_messages(messages))
 
         parts: list[str | ai.messages.FilePart] = []
         if content:
             parts.append(content)
-        if image is not None:
-            parts.append(
-                ai.file_part(
-                    tensor_to_data_uri(image, mime_type="image/png"),
-                    media_type="image/png",
-                )
-            )
+        for attachment in (media or {}).values():
+            parts.append(_media_part(attachment))
         messages.append(ai.message(*parts, role=role))
         return IO.NodeOutput(_dump_messages(messages))
 
@@ -390,6 +429,13 @@ class CustomOpenAICompletion(IO.ComfyNode):
                     socketless=False,
                     force_input=False,
                     tooltip="Tools array JSON: AI SDK tools or OpenAI function/tool definitions.",
+                ),
+                IO.String.Input(
+                    "extra_body",
+                    default="{}",
+                    multiline=True,
+                    optional=True,
+                    tooltip="Provider-specific request body fields as a JSON object.",
                 ),
                 IO.Combo.Input(
                     "tool_choice",
@@ -445,6 +491,7 @@ class CustomOpenAICompletion(IO.ComfyNode):
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
         tool_choice: str = "auto",
+        extra_body: str = "{}",
     ) -> IO.NodeOutput:
         api_key, messages, tools = _parse_request(
             api_key, model, messages_json, tools_json
@@ -459,6 +506,7 @@ class CustomOpenAICompletion(IO.ComfyNode):
             temperature,
             max_output_tokens,
             tool_choice,
+            extra_body,
             OpenAIChatCompletionsProtocol(),
         )
 

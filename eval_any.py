@@ -43,5 +43,5 @@ class Eval(IO.ComfyNode):
         try:
             result = eval(expression, {"__builtins__": __builtins__}, env)  # noqa: S307
         except Exception as exc:
-            raise RuntimeError(f"Eval error: {exc}") from exc
+            raise RuntimeError(f"Eval node error: {exc}") from exc
         return IO.NodeOutput(result)
