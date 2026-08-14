@@ -3,7 +3,8 @@ name = "Comfyui-Nodes-basenc"
 description = ""
 version = "0.1.0"
 license = { file = "LICENSE" }
-dependencies = ["jmespath", "python-dotenv", "openai"]
+requires-python = ">=3.12"
+dependencies = ["jmespath", "python-dotenv", "ai[openai]"]
 
 [project.urls]
 Repository = "https://github.com/basenc/Comfyui-Nodes-basenc"
