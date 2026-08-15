@@ -1,29 +1,48 @@
-from typing import Literal
+from typing import ClassVar, Literal
 
 import torch
-
 from comfy_api.latest import IO
 
-ResolutionPreset = Literal["480p", "720p", "1080p"]
-Orientation = Literal["auto", "landscape", "portrait", "square"]
+ResolutionPreset = Literal["480p", "544p", "720p", "1080p"]
+AspectRatio = Literal["auto", "16:9", "9:16", "1:1", "4:3", "3:4"]
 
 
 class WanVideoSize(IO.ComfyNode):
-    _SIZE_TABLE: dict[ResolutionPreset, dict[str, tuple[int, int]]] = {
+    _ASPECT_RATIOS: ClassVar[dict[str, float]] = {
+        "16:9": 16 / 9,
+        "4:3": 4 / 3,
+        "1:1": 1,
+        "3:4": 3 / 4,
+        "9:16": 9 / 16,
+    }
+    _SIZE_TABLE: ClassVar[dict[ResolutionPreset, dict[str, tuple[int, int]]]] = {
         "480p": {
-            "landscape": (640, 480),
-            "portrait": (480, 640),
-            "square": (480, 480),
+            "16:9": (864, 480),
+            "9:16": (480, 864),
+            "1:1": (480, 480),
+            "4:3": (640, 480),
+            "3:4": (480, 640),
+        },
+        "544p": {
+            "16:9": (960, 544),
+            "9:16": (544, 960),
+            "1:1": (544, 544),
+            "4:3": (736, 544),
+            "3:4": (544, 736),
         },
         "720p": {
-            "landscape": (1280, 720),
-            "portrait": (720, 1280),
-            "square": (720, 720),
+            "16:9": (1280, 736),
+            "9:16": (736, 1280),
+            "1:1": (736, 736),
+            "4:3": (960, 736),
+            "3:4": (736, 960),
         },
         "1080p": {
-            "landscape": (1920, 1088),
-            "portrait": (1088, 1920),
-            "square": (1088, 1088),
+            "16:9": (1920, 1088),
+            "9:16": (1088, 1920),
+            "1:1": (1088, 1088),
+            "4:3": (1440, 1088),
+            "3:4": (1088, 1440),
         },
     }
 
@@ -37,6 +56,7 @@ class WanVideoSize(IO.ComfyNode):
             inputs=[
                 IO.Image.Input(
                     "image",
+                    optional=True,
                     tooltip="Reference image used for aspect detection in auto mode.",
                 ),
                 IO.Combo.Input(
@@ -46,10 +66,10 @@ class WanVideoSize(IO.ComfyNode):
                     tooltip="Resolution preset.",
                 ),
                 IO.Combo.Input(
-                    "orientation",
-                    options=["auto", "landscape", "portrait", "square"],
+                    "aspect_ratio",
+                    options=["auto", "16:9", "9:16", "1:1", "4:3", "3:4"],
                     default="auto",
-                    tooltip="Use image aspect in auto, or force an orientation.",
+                    tooltip="Use the nearest image aspect ratio in auto, or force a ratio.",
                 ),
             ],
             outputs=[
@@ -67,42 +87,32 @@ class WanVideoSize(IO.ComfyNode):
         )
 
     @classmethod
-    def _orientation_from_image(
-        cls, image: torch.Tensor, threshold: float = 0.1
-    ) -> str:
+    def _aspect_ratio_from_image(cls, image: torch.Tensor) -> str:
         h = int(image.shape[-3])
         w = int(image.shape[-2])
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image dimensions: {w}x{h}")
-        min_dim = min(w, h)
-        diff = abs(w - h)
-        if min_dim > 0 and diff / min_dim < threshold:
-            return "square"
-        if w > h:
-            return "landscape"
-        if h > w:
-            return "portrait"
-        return "square"
+        return min(
+            cls._ASPECT_RATIOS, key=lambda name: abs(w / h - cls._ASPECT_RATIOS[name])
+        )
 
     @classmethod
     def execute(
         cls,
-        image: torch.Tensor,
+        image: torch.Tensor | None = None,
         resolution: ResolutionPreset = "720p",
-        orientation: Orientation = "auto",
+        aspect_ratio: AspectRatio = "auto",
     ) -> IO.NodeOutput:
-        if image is None:
-            raise ValueError("image is required.")
-
-        if orientation == "auto":
-            orientation = cls._orientation_from_image(image)
+        if aspect_ratio == "auto":
+            if image is None:
+                raise ValueError("image is required when aspect_ratio is auto.")
+            aspect_ratio = cls._aspect_ratio_from_image(image)
 
         resolution_sizes = cls._SIZE_TABLE.get(resolution)
         if resolution_sizes is None:
             raise ValueError(f"Unknown resolution preset: {resolution}")
 
-        if orientation not in resolution_sizes:
-            raise ValueError(f"Unknown orientation: {orientation}")
+        if aspect_ratio not in resolution_sizes:
+            raise ValueError(f"Unknown aspect ratio: {aspect_ratio}")
 
-        w, h = resolution_sizes[orientation]
-        return IO.NodeOutput(int(w), int(h))
+        return IO.NodeOutput(*resolution_sizes[aspect_ratio])
