@@ -1,3 +1,4 @@
 jmespath
 python-dotenv
 ai[openai]
+cryptography

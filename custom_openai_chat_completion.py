@@ -1,24 +1,29 @@
 import json
 import os
-from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import ai
+import comfy.model_management
 from ai.providers.openai import (
     OpenAIChatCompletionsProtocol,
     OpenAIResponsesProtocol,
 )
-from dotenv import load_dotenv
-from torch import Tensor
-
-import comfy.model_management
 from comfy_api.latest import IO
 from comfy_api_nodes.util.conversions import (
     audio_to_base64_string,
     tensor_to_data_uri,
     video_to_base64_string,
 )
+from dotenv import load_dotenv
+from torch import Tensor
+
+from .secret_store import resolve_secret
 
 load_dotenv()
+
+type JsonValue = (
+    str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+)
 
 
 def _parse_request(
@@ -27,7 +32,9 @@ def _parse_request(
     messages_json: str | None,
     tools_json: str,
 ) -> tuple[str, list[ai.messages.Message], list[ai.tools.Tool]]:
-    api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+    api_key = (
+        resolve_secret(api_key) if api_key else os.environ.get("OPENAI_API_KEY", "")
+    )
     if not api_key:
         raise ValueError("`api_key` is required.")
 
@@ -42,15 +49,11 @@ def _parse_request(
         raise ValueError("`messages_json` must decode to a non-empty list.")
 
     messages = [ai.messages.Message.model_validate(item) for item in items]
-    tools = (
-        [_parse_tool(tool) for tool in json.loads(tools_json)]
-        if tools_json
-        else []
-    )
+    tools = [_parse_tool(tool) for tool in json.loads(tools_json)] if tools_json else []
     return api_key, messages, tools
 
 
-def _parse_tool(tool: dict[str, Any]) -> ai.tools.Tool:
+def _parse_tool(tool: dict[str, JsonValue]) -> ai.tools.Tool:
     """Accept AI SDK tool JSON or OpenAI function/tool definitions."""
     if "kind" in tool:
         return ai.tools.Tool.model_validate(tool)
@@ -121,27 +124,25 @@ def _media_part(
     )
 
 
-async def _run_completion(
-    api_base: str,
-    api_key: str,
-    model_id: str,
-    messages: list[ai.messages.Message],
-    tools: list[ai.tools.Tool],
+def _normalize_api_base(api_base: str) -> str:
+    parsed = urlsplit(api_base)
+    return urlunsplit(
+        parsed._replace(
+            path=parsed.path.rstrip("/")
+            .removesuffix("/responses")
+            .removesuffix("/chat/completions")
+        )
+    )
+
+
+def _inference_params(
     temperature: float,
     max_output_tokens: int,
     tool_choice: str,
     extra_body: str,
-    protocol: OpenAIResponsesProtocol | OpenAIChatCompletionsProtocol,
-) -> ai.messages.Message:
-    provider = ai.get_provider(
-        "openai",
-        base_url=api_base.rstrip("/")
-        .removesuffix("/responses")
-        .removesuffix("/chat/completions"),
-        api_key=api_key,
-        protocol=protocol,
-    )
-    params = ai.InferenceRequestParams(
+    tools: list[ai.tools.Tool],
+) -> ai.InferenceRequestParams:
+    return ai.InferenceRequestParams(
         sampling={
             ai.TemperatureSamplerParams: ai.TemperatureSamplerParams(
                 temperature=temperature
@@ -159,12 +160,34 @@ async def _run_completion(
         ),
         extra_body=json.loads(extra_body) if extra_body else None,
     )
+
+
+async def _run_completion(
+    api_base: str,
+    api_key: str,
+    model_id: str,
+    messages: list[ai.messages.Message],
+    tools: list[ai.tools.Tool],
+    temperature: float,
+    max_output_tokens: int,
+    tool_choice: str,
+    extra_body: str,
+    protocol: OpenAIResponsesProtocol | OpenAIChatCompletionsProtocol,
+) -> ai.messages.Message:
+    provider = ai.get_provider(
+        "openai",
+        base_url=_normalize_api_base(api_base),
+        api_key=api_key,
+        protocol=protocol,
+    )
     try:
         async with ai.stream(
             ai.Model(id=model_id, provider=provider),
             messages,
             tools=tools or None,
-            params=params,
+            params=_inference_params(
+                temperature, max_output_tokens, tool_choice, extra_body, tools
+            ),
         ) as stream:
             async for _ in stream:
                 comfy.model_management.throw_exception_if_processing_interrupted()
@@ -371,7 +394,10 @@ class MessageAppend(IO.ComfyNode):
         media: IO.Autogrow.Type | None = None,
     ) -> IO.NodeOutput:
         messages = (
-            [ai.messages.Message.model_validate(item) for item in json.loads(messages_json)]
+            [
+                ai.messages.Message.model_validate(item)
+                for item in json.loads(messages_json)
+            ]
             if messages_json
             else []
         )
