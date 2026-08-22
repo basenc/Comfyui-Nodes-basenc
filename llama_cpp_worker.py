@@ -54,7 +54,6 @@ def _load_model(request):
         n_ctx=request["n_ctx"],
         n_batch=request["n_batch"],
         n_gpu_layers=request["gpu_layers"],
-        flash_attn=request["flash_attn"],
         verbose=False,
     )
     handler = mtmd or model._chat_handlers.get("chat_template.default")
@@ -77,6 +76,7 @@ def _complete(model, handler, request):
         max_tokens=request["max_tokens"],
         stream=False,
         enable_thinking=request["thinking"],
+        **request["chat_template_kwargs"],
     )
 
 

@@ -1,3 +1,4 @@
+import gc
 import json
 import math
 import subprocess
@@ -85,6 +86,9 @@ def _resolve_loras(loras: LoraStack | None) -> list[tuple[str, float]]:
 
 
 def _run_worker(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    comfy.model_management.unload_all_models()
+    gc.collect()
+    comfy.model_management.soft_empty_cache(force=True)
     with tempfile.TemporaryDirectory(prefix="llama-cpp-") as directory:
         request_path = Path(directory) / "request.json"
         response_path = Path(directory) / "response.json"
@@ -335,6 +339,15 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Pass enable_thinking to the model chat template.",
                 ),
+                IO.String.Input(
+                    "chat_template_kwargs",
+                    default="{}",
+                    multiline=True,
+                    optional=True,
+                    socketless=False,
+                    force_input=False,
+                    tooltip="Additional GGUF chat-template variables as a JSON object.",
+                ),
                 IO.Float.Input(
                     "temperature",
                     default=1.0,
@@ -376,12 +389,6 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="GPU layers: -1 for all, 0 for CPU, positive for partial offload.",
                 ),
-                IO.Boolean.Input(
-                    "flash_attn",
-                    default=True,
-                    optional=True,
-                    tooltip="Enable llama.cpp flash attention.",
-                ),
             ],
             outputs=[
                 IO.String.Output(
@@ -412,15 +419,20 @@ class LlamaCppCompletion(IO.ComfyNode):
         tools_json: str = "[]",
         tool_choice: str = "auto",
         thinking: bool = True,
+        chat_template_kwargs: str = "{}",
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
         n_ctx: int = 8192,
         n_batch: int = 512,
         gpu_layers: int = -1,
-        flash_attn: bool = True,
     ) -> IO.NodeOutput:
         messages = _parse_messages(messages_json)
         tools = _tools_to_llama(_parse_tools(tools_json))
+        template_kwargs = (
+            json.loads(chat_template_kwargs) if chat_template_kwargs else {}
+        )
+        if not isinstance(template_kwargs, dict):
+            raise ValueError("`chat_template_kwargs` must decode to a JSON object.")
         if mmproj == _NO_MMPROJ and any(message.files for message in messages):
             raise ValueError("Media messages require an MTMD projector.")
         return _completion_output(
@@ -443,12 +455,12 @@ class LlamaCppCompletion(IO.ComfyNode):
                         "tools": tools,
                         "tool_choice": tool_choice if tools else None,
                         "thinking": thinking,
+                        "chat_template_kwargs": template_kwargs,
                         "temperature": temperature,
                         "max_tokens": max_output_tokens or None,
                         "n_ctx": n_ctx,
                         "n_batch": n_batch,
                         "gpu_layers": gpu_layers,
-                        "flash_attn": flash_attn,
                     }
                 )
             ),

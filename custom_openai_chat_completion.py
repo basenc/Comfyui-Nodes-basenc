@@ -421,6 +421,8 @@ class MessageAppend(IO.ComfyNode):
         if content:
             parts.append(content)
         for attachment in (media or {}).values():
+            if attachment is None:
+                continue
             parts.append(_media_part(attachment))
         messages.append(ai.message(*parts, role=role))
         return IO.NodeOutput(_dump_messages(messages))
