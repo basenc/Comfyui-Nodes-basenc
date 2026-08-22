@@ -41,16 +41,21 @@ def _parse_request(
     if not model:
         raise ValueError("`model` is required.")
 
+    return api_key, _parse_messages(messages_json), _parse_tools(tools_json)
+
+
+def _parse_messages(messages_json: str | None) -> list[ai.messages.Message]:
     if not messages_json:
         raise ValueError("`messages_json` is required.")
 
     items = json.loads(messages_json)
     if not isinstance(items, list) or not items:
         raise ValueError("`messages_json` must decode to a non-empty list.")
+    return [ai.messages.Message.model_validate(item) for item in items]
 
-    messages = [ai.messages.Message.model_validate(item) for item in items]
-    tools = [_parse_tool(tool) for tool in json.loads(tools_json)] if tools_json else []
-    return api_key, messages, tools
+
+def _parse_tools(tools_json: str) -> list[ai.tools.Tool]:
+    return [_parse_tool(tool) for tool in json.loads(tools_json)] if tools_json else []
 
 
 def _parse_tool(tool: dict[str, JsonValue]) -> ai.tools.Tool:
@@ -82,6 +87,22 @@ def _dump_messages(messages: list[ai.messages.Message]) -> str:
     return json.dumps(
         [m.model_dump(mode="json", exclude_none=True) for m in messages],
         indent=2,
+    )
+
+
+def _completion_output(
+    messages: list[ai.messages.Message], message: ai.messages.Message
+) -> IO.NodeOutput:
+    return IO.NodeOutput(
+        message.text,
+        json.dumps(
+            [
+                tool_call.model_dump(mode="json", exclude_none=True)
+                for tool_call in message.tool_calls
+            ],
+            indent=2,
+        ),
+        _dump_messages(messages + [message]),
     )
 
 
@@ -317,17 +338,7 @@ class CustomOpenAIResponse(IO.ComfyNode):
             OpenAIResponsesProtocol(),
         )
 
-        return IO.NodeOutput(
-            message.text,
-            json.dumps(
-                [
-                    tc.model_dump(mode="json", exclude_none=True)
-                    for tc in message.tool_calls
-                ],
-                indent=2,
-            ),
-            _dump_messages(messages + [message]),
-        )
+        return _completion_output(messages, message)
 
 
 class MessageAppend(IO.ComfyNode):
@@ -536,14 +547,4 @@ class CustomOpenAICompletion(IO.ComfyNode):
             OpenAIChatCompletionsProtocol(),
         )
 
-        return IO.NodeOutput(
-            message.text,
-            json.dumps(
-                [
-                    tc.model_dump(mode="json", exclude_none=True)
-                    for tc in message.tool_calls
-                ],
-                indent=2,
-            ),
-            _dump_messages(messages + [message]),
-        )
+        return _completion_output(messages, message)

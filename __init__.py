@@ -1,16 +1,18 @@
-from comfy_api.latest import ComfyExtension
-from typing_extensions import override
+from typing import override
 
-from . import api_routes
+from comfy_api.latest import ComfyExtension
+
+from . import api_routes as api_routes
 from .custom_openai_chat_completion import (
-    CustomOpenAIResponse,
     CustomOpenAICompletion,
+    CustomOpenAIResponse,
     MessageAppend,
 )
+from .dimensions_preset_picker import DimensionsPresetPicker
 from .env_var_node import EnvVarNode
 from .eval_any import Eval
 from .json_path_select import JSONPathSelect
-from .dimensions_preset_picker import DimensionsPresetPicker
+from .llama_cpp_completion import LlamaCppCompletion, LlamaCppLora
 from .rescale_to_dimensions import RescaleToDimensions
 from .wan_video_size import WanVideoSize
 
@@ -24,6 +26,8 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             JSONPathSelect,
             CustomOpenAIResponse,
             CustomOpenAICompletion,
+            LlamaCppCompletion,
+            LlamaCppLora,
             MessageAppend,
             EnvVarNode,
             Eval,

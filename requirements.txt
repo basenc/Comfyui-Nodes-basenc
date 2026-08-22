@@ -2,3 +2,5 @@ jmespath
 python-dotenv
 ai[openai]
 cryptography
+llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-cu124/llama_cpp_python-0.3.34-py3-none-manylinux_2_35_x86_64.whl#sha256=1a0489b95fe6357a2efe1bf7fd98776b44e9ee1e84aaaecd4a1345977e03e9eb ; sys_platform == "linux" and platform_machine == "x86_64"
+llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34-cu124/llama_cpp_python-0.3.34-py3-none-win_amd64.whl#sha256=d4655623f6256316bd66981d06dd35f2d54bccfd35b4b62ca6665ded2d237a3d ; sys_platform == "win32" and platform_machine == "AMD64"
