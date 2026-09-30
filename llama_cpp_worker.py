@@ -1,47 +1,47 @@
 import ctypes
 import json
 import sys
-from pathlib import Path
-
-from llama_cpp import Llama, llama_cpp
-from llama_cpp.llama_chat_format import MTMDChatHandler
+from importlib.metadata import distribution
+from typing import TypedDict
 
 
-def _apply_loras(model: Llama, loras: list[list[str | float]]) -> None:
-    adapters = []
-    scales = []
-    for path, strength in loras:
-        adapter = llama_cpp.llama_adapter_lora_init(
-            model.model,
-            str(path).encode("utf-8"),
-        )
-        if adapter is None:
-            raise RuntimeError(f"Failed to load LoRA: {path}")
-        if llama_cpp.llama_adapter_get_alora_n_invocation_tokens(adapter):
-            llama_cpp.llama_adapter_lora_free(adapter)
-            raise ValueError("aLoRA adapters are not supported.")
-        adapters.append(adapter)
-        scales.append(float(strength))
-    if (
-        error := (
-            llama_cpp.llama_set_adapters_lora(
-                model.ctx,
-                (llama_cpp.llama_adapter_lora_p_ctypes * len(adapters))(*adapters),
-                len(adapters),
-                (ctypes.c_float * len(scales))(*scales),
-            )
-            if adapters
-            else llama_cpp.llama_set_adapters_lora(model.ctx, None, 0, None)
-        )
-    ) != 0:
-        raise RuntimeError(f"Failed to apply LoRAs: error {error}")
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 
-def _load_model(request):
+class CompletionRequest(TypedDict):
+    model_path: str
+    mmproj_path: str | None
+    messages: list[dict[str, JsonValue]]
+    tools: list[dict[str, JsonValue]]
+    tool_choice: str | None
+    thinking: bool
+    chat_template_kwargs: dict[str, JsonValue]
+    temperature: float
+    max_tokens: int | None
+    n_ctx: int
+    n_batch: int
+    gpu_layers: int
+    verbose: bool
+
+
+def main() -> None:
+    lib_dir = distribution("llama-cpp-python").locate_file("llama_cpp/lib")
+    ctypes.CDLL(str(lib_dir / "libggml-base.so"), mode=ctypes.RTLD_GLOBAL)
+    ctypes.CDLL(str(lib_dir / "libggml.so"), mode=ctypes.RTLD_GLOBAL)
+
+    from llama_cpp import Llama, llama_cpp
+    from llama_cpp.llama_chat_format import MTMDChatHandler
+
+    load = llama_cpp._lib.ggml_backend_load_all_from_path
+    load.argtypes = [ctypes.c_char_p]
+    load.restype = None
+    load(str(llama_cpp._base_path).encode())
+
+    request: CompletionRequest = json.load(sys.stdin)
     mtmd = (
         MTMDChatHandler(
             clip_model_path=request["mmproj_path"],
-            verbose=False,
+            verbose=request["verbose"],
             use_gpu=True,
         )
         if request["mmproj_path"] is not None
@@ -49,57 +49,34 @@ def _load_model(request):
     )
     model = Llama(
         model_path=request["model_path"],
-        chat_format=("chat_template.default" if mtmd is None else None),
+        chat_format="chat_template.default" if mtmd is None else None,
         chat_handler=mtmd,
         n_ctx=request["n_ctx"],
         n_batch=request["n_batch"],
         n_gpu_layers=request["gpu_layers"],
-        verbose=False,
+        verbose=request["verbose"],
     )
-    handler = mtmd or model._chat_handlers.get("chat_template.default")
-    if handler is None:
-        model.close()
-        raise ValueError(
-            "The model GGUF does not contain tokenizer.chat_template metadata."
-        )
-    return model, handler, mtmd
-
-
-def _complete(model, handler, request):
-    _apply_loras(model, request["loras"])
-    return handler(
-        llama=model,
-        messages=request["messages"],
-        tools=request["tools"] or None,
-        tool_choice=request["tool_choice"],
-        temperature=request["temperature"],
-        max_tokens=request["max_tokens"],
-        stream=False,
-        enable_thinking=request["thinking"],
-        **request["chat_template_kwargs"],
-    )
-
-
-def _run(request):
-    model, handler, mtmd = _load_model(request)
     try:
-        return _complete(model, handler, request)
+        if not model.metadata.get("tokenizer.chat_template"):
+            raise ValueError("The model GGUF does not contain tokenizer.chat_template metadata.")
+        handler = mtmd or model._chat_handlers["chat_template.default"]
+        json.dump(
+            handler(
+                llama=model,
+                messages=request["messages"],
+                tools=request["tools"] or None,
+                tool_choice=request["tool_choice"],
+                temperature=request["temperature"],
+                max_tokens=request["max_tokens"],
+                stream=False,
+                enable_thinking=request["thinking"],
+                **request["chat_template_kwargs"],
+            ),
+            sys.stdout,
+        )
     finally:
-        if mtmd is not None:
-            mtmd._exit_stack.close()
         model.close()
 
 
-def _read_request(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_response(path: Path, response) -> None:
-    path.write_text(json.dumps(response), encoding="utf-8")
-
-
-def _main(request_path: Path, response_path: Path) -> None:
-    _write_response(response_path, _run(_read_request(request_path)))
-
-
-_main(Path(sys.argv[1]), Path(sys.argv[2]))
+if __name__ == "__main__":
+    main()

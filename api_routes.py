@@ -12,7 +12,9 @@ async def get_env_keys(request):
 
 @PromptServer.instance.routes.post("/basenc/api_keys")
 async def save_api_key(request):
-    secret = (await request.json())["secret"]
-    if not isinstance(secret, str):
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("secret"), str):
         raise web.HTTPBadRequest(text="`secret` must be a string.")
-    return web.json_response({"reference": store_secret(secret)})
+    if not body["secret"]:
+        raise web.HTTPBadRequest(text="`secret` must not be empty.")
+    return web.json_response({"reference": store_secret(body["secret"])})

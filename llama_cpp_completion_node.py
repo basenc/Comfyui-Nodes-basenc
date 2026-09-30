@@ -1,11 +1,9 @@
+import ctypes
 import gc
 import json
-import math
-import subprocess
-import sys
-import tempfile
-import time
+from functools import cache
 from pathlib import Path
+from typing import TypedDict
 
 import ai
 import comfy.model_management
@@ -13,24 +11,32 @@ import folder_paths
 from ai.types import media
 from ai.types.usage import Usage
 from comfy_api.latest import IO
+from llama_cpp import Llama, llama_cpp
+from llama_cpp.llama_chat_format import MTMDChatHandler
 
-from .custom_openai_chat_completion import (
-    JsonValue,
-    _completion_output,
-    _parse_messages,
-    _parse_tools,
-)
+from .message_node import MESSAGES, Messages
+from .openai_chat_node import JsonValue, _parse_tools
 
-type LoraStack = list[tuple[str, float]]
+
 type ChatMessage = dict[str, JsonValue]
 type ChatTool = dict[str, JsonValue]
 
-_MODEL_FOLDER = "basenc_llama_cpp_models"
-_LORA_FOLDER = "basenc_llama_cpp_loras"
-_LORA_STACK_IO = IO.Custom("BASENC_LLAMA_CPP_LORAS")
+
+class CompletionRequest(TypedDict):
+    model_path: str
+    mmproj_path: str | None
+    messages: list[ChatMessage]
+    tools: list[ChatTool]
+    tool_choice: str | None
+    thinking: bool
+    chat_template_kwargs: dict[str, JsonValue]
+    temperature: float
+    max_tokens: int | None
+    n_ctx: int
+    n_batch: int
+    gpu_layers: int
+    verbose: boolODEL_FOLDER = "basenc_llama_cpp_models"
 _MODELS_DIR = Path(folder_paths.models_dir)
-_NO_MMPROJ = "None"
-_MAX_INT = 2_147_483_647
 
 
 def _register_model_folders(
@@ -56,13 +62,6 @@ _register_model_folders(
     _MODELS_DIR / "LLM",
     _MODELS_DIR / "text_encoders",
 )
-_register_model_folders(
-    _LORA_FOLDER,
-    {".gguf", ".safetensors"},
-    _MODELS_DIR / "LLM",
-    _MODELS_DIR / "text_encoders",
-    _MODELS_DIR / "loras",
-)
 
 
 def _model_options(mmproj: bool) -> list[str]:
@@ -73,55 +72,36 @@ def _model_options(mmproj: bool) -> list[str]:
     ]
 
 
-def _resolve_loras(loras: LoraStack | None) -> list[tuple[str, float]]:
-    selections = [
-        (folder_paths.get_full_path_or_raise(_LORA_FOLDER, name), strength)
-        for name, strength in loras or []
-    ]
-    if len({path for path, _ in selections}) != len(selections):
-        raise ValueError("A LoRA can only appear once in a stack.")
-    if not all(math.isfinite(strength) for _, strength in selections):
-        raise ValueError("LoRA strengths must be finite.")
-    return selections
-
-
-def _run_worker(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+def _run_completion(request: CompletionRequest) -> dict[str, JsonValue]:
+    comfy.model_management.throw_exception_if_processing_interrupted()
     comfy.model_management.unload_all_models()
     gc.collect()
     comfy.model_management.soft_empty_cache(force=True)
-    with tempfile.TemporaryDirectory(prefix="llama-cpp-") as directory:
-        request_path = Path(directory) / "request.json"
-        response_path = Path(directory) / "response.json"
-        stderr_path = Path(directory) / "stderr.log"
-        request_path.write_text(json.dumps(request), encoding="utf-8")
-        with stderr_path.open("w", encoding="utf-8") as stderr_file:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(__file__).with_name("llama_cpp_worker.py")),
-                    str(request_path),
-                    str(response_path),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-            )
-            while process.poll() is None:
+    with subprocess.Popen(
+        [sys.executable, str(Path(__file__).with_name("llama_cpp_worker.py"))],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    ) as worker:
+        payload: bytes | None = json.dumps(request).encode()
+        try:
+            while True:
+                comfy.model_management.throw_exception_if_processing_interrupted()
                 try:
-                    comfy.model_management.throw_exception_if_processing_interrupted()
-                except comfy.model_management.InterruptProcessingException:
-                    process.terminate()
-                    process.wait()
-                    raise
-                time.sleep(0.1)
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"llama.cpp worker crashed with exit code {process.returncode}.\n"
-                f"{stderr_path.read_text(encoding='utf-8')}"
-            )
-        return json.loads(response_path.read_text(encoding="utf-8"))
+                    output, _ = worker.communicate(input=payload, timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    payload = None
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate()
+        if worker.returncode:
+            raise RuntimeError(f"llama.cpp worker exited with code {worker.returncode}")
+    return json.loads(output)
 
 
 def _tool_result_content(value: JsonValue | ai.messages.ContentOutput) -> str:
+    """Convert an AI SDK tool result to one OpenAI tool-content string."""
     if isinstance(value, ai.messages.ContentOutput):
         raise TypeError("MTMD does not support multipart tool results.")
     if value is None:
@@ -131,9 +111,8 @@ def _tool_result_content(value: JsonValue | ai.messages.ContentOutput) -> str:
     return json.dumps(value, separators=(",", ":"), default=str)
 
 
-def _messages_to_llama(
-    messages: list[ai.messages.Message],
-) -> list[ChatMessage]:
+def _messages_to_openai_chat(messages: Messages) -> list[ChatMessage]:
+    """Bridge AI SDK messages to the OpenAI dictionaries required by llama-cpp-python."""
     result: list[ChatMessage] = []
     for message in messages:
         if message.role == "system":
@@ -193,11 +172,12 @@ def _messages_to_llama(
     return result
 
 
-def _tools_to_llama(tools: list[ai.tools.Tool]) -> list[ChatTool]:
+def _tools_to_openai_chat(tools: list[ai.tools.Tool]) -> list[ChatTool]:
+    """Convert AI SDK tool schemas to llama-cpp-python's function tools."""
     result: list[ChatTool] = []
     for tool in tools:
         if tool.kind != "function" or tool.spec is None:
-            raise ValueError("llama.cpp supports function tools only.")
+            raise ValueError("Local chat generation supports function tools only.")
         result.append(
             {
                 "type": "function",
@@ -214,6 +194,7 @@ def _tools_to_llama(tools: list[ai.tools.Tool]) -> list[ChatTool]:
 def _assistant_message(
     response: dict[str, JsonValue],
 ) -> ai.messages.Message:
+    """Bridge a llama-cpp-python response back to an AI SDK message."""
     raw = response["choices"][0]["message"]
     parts: list[ai.messages.Part] = []
     if raw.get("content"):
@@ -239,59 +220,12 @@ def _assistant_message(
     )
 
 
-class LlamaCppLora(IO.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> IO.Schema:
-        return IO.Schema(
-            node_id="LlamaCppLora",
-            display_name="llama.cpp LoRA",
-            category="api node/text/llama.cpp",
-            inputs=[
-                _LORA_STACK_IO.Input(
-                    "loras",
-                    optional=True,
-                    tooltip="Optional preceding llama.cpp LoRA stack.",
-                ),
-                IO.Combo.Input(
-                    "lora",
-                    options=folder_paths.get_filename_list(_LORA_FOLDER),
-                    tooltip="LoRA from models/LLM, models/text_encoders, or models/loras.",
-                ),
-                IO.Float.Input(
-                    "strength",
-                    default=1.0,
-                    min=-100.0,
-                    max=100.0,
-                    step=0.01,
-                    tooltip="LoRA adapter scale.",
-                ),
-            ],
-            outputs=[
-                _LORA_STACK_IO.Output(
-                    id="loras",
-                    display_name="LoRAs",
-                )
-            ],
-        )
-
-    @classmethod
-    def execute(
-        cls,
-        lora: str,
-        strength: float,
-        loras: LoraStack | None = None,
-    ) -> IO.NodeOutput:
-        return IO.NodeOutput([*(loras or []), (lora, strength)])
-
-
 class LlamaCppCompletion(IO.ComfyNode):
     @classmethod
     def define_schema(cls) -> IO.Schema:
         return IO.Schema(
             node_id="LlamaCppCompletion",
             display_name="llama.cpp Chat Completion",
-            category="api node/text/llama.cpp",
-            description="Run a local llama.cpp chat completion with optional MTMD.",
             inputs=[
                 IO.Combo.Input(
                     "model",
@@ -300,22 +234,13 @@ class LlamaCppCompletion(IO.ComfyNode):
                 ),
                 IO.Combo.Input(
                     "mmproj",
-                    options=[_NO_MMPROJ, *_model_options(mmproj=True)],
-                    default=_NO_MMPROJ,
+                    options=["None", *_model_options(mmproj=True)],
+                    default="None",
                     tooltip="Optional MTMD projector. None runs text-only chat.",
                 ),
-                _LORA_STACK_IO.Input(
-                    "loras",
-                    optional=True,
-                    tooltip="Optional llama.cpp LoRA stack.",
-                ),
-                IO.String.Input(
-                    "messages_json",
-                    multiline=True,
+                MESSAGES.Input(
+                    "messages",
                     optional=False,
-                    socketless=False,
-                    force_input=True,
-                    tooltip="JSON array of AI SDK messages.",
                 ),
                 IO.String.Input(
                     "tools_json",
@@ -324,7 +249,6 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     socketless=False,
                     force_input=False,
-                    tooltip="Tools array JSON: AI SDK tools or OpenAI function definitions.",
                 ),
                 IO.Combo.Input(
                     "tool_choice",
@@ -361,7 +285,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "max_output_tokens",
                     default=1024,
                     min=0,
-                    max=_MAX_INT,
+                    max=2_147_483_647,
                     optional=True,
                     tooltip="Max output tokens. 0 to use the remaining context.",
                 ),
@@ -369,7 +293,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "n_ctx",
                     default=8192,
                     min=512,
-                    max=_MAX_INT,
+                    max=2_147_483_647,
                     optional=True,
                     tooltip="Text and media context size.",
                 ),
@@ -377,7 +301,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "n_batch",
                     default=512,
                     min=1,
-                    max=_MAX_INT,
+                    max=2_147_483_647,
                     optional=True,
                     tooltip="Prompt processing batch size.",
                 ),
@@ -385,26 +309,24 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "gpu_layers",
                     default=-1,
                     min=-1,
-                    max=_MAX_INT,
+                    max=2_147_483_647,
                     optional=True,
-                    tooltip="GPU layers: -1 for all, 0 for CPU, positive for partial offload.",
+                    tooltip="-1 loads all to GPU",
                 ),
+                IO.Boolean.Input("verbose", default=False, optional=True),
             ],
             outputs=[
                 IO.String.Output(
                     id="response_text",
                     display_name="Response Text",
-                    tooltip="Aggregated output text.",
                 ),
                 IO.String.Output(
                     id="tool_calls_json",
                     display_name="Tool Calls JSON",
-                    tooltip="JSON array of tool call parts.",
                 ),
-                IO.String.Output(
-                    id="output_json",
-                    display_name="Output JSON",
-                    tooltip="Messages + assistant message JSON.",
+                MESSAGES.Output(
+                    id="messages",
+                    display_name="Messages",
                 ),
             ],
         )
@@ -414,8 +336,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         cls,
         model: str,
         mmproj: str,
-        messages_json: str | None,
-        loras: LoraStack | None = None,
+        messages: Messages,
         tools_json: str = "[]",
         tool_choice: str = "auto",
         thinking: bool = True,
@@ -425,43 +346,44 @@ class LlamaCppCompletion(IO.ComfyNode):
         n_ctx: int = 8192,
         n_batch: int = 512,
         gpu_layers: int = -1,
+        verbose: bool = False,
     ) -> IO.NodeOutput:
-        messages = _parse_messages(messages_json)
-        tools = _tools_to_llama(_parse_tools(tools_json))
+        tools = _tools_to_openai_chat(_parse_tools(tools_json))
         template_kwargs = (
             json.loads(chat_template_kwargs) if chat_template_kwargs else {}
         )
         if not isinstance(template_kwargs, dict):
-            raise ValueError("`chat_template_kwargs` must decode to a JSON object.")
-        if mmproj == _NO_MMPROJ and any(message.files for message in messages):
+            raise TypeError("`chat_template_kwargs` must decode to a JSON object.")
+        if mmproj == "None" and any(message.files for message in messages):
             raise ValueError("Media messages require an MTMD projector.")
-        return _completion_output(
-            messages,
-            _assistant_message(
-                _run_worker(
-                    {
-                        "model_path": folder_paths.get_full_path_or_raise(
-                            _MODEL_FOLDER, model
-                        ),
-                        "mmproj_path": (
-                            None
-                            if mmproj == _NO_MMPROJ
-                            else folder_paths.get_full_path_or_raise(
-                                _MODEL_FOLDER, mmproj
-                            )
-                        ),
-                        "loras": _resolve_loras(loras),
-                        "messages": _messages_to_llama(messages),
-                        "tools": tools,
-                        "tool_choice": tool_choice if tools else None,
-                        "thinking": thinking,
-                        "chat_template_kwargs": template_kwargs,
-                        "temperature": temperature,
-                        "max_tokens": max_output_tokens or None,
-                        "n_ctx": n_ctx,
-                        "n_batch": n_batch,
-                        "gpu_layers": gpu_layers,
-                    }
-                )
+        response = _assistant_message(
+            _run_completion(
+                {
+                    "model_path": folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model),
+                    "mmproj_path": (
+                        None
+                        if mmproj == "None"
+                        else folder_paths.get_full_path_or_raise(_MODEL_FOLDER, mmproj)
+                    ),
+                    "messages": _messages_to_openai_chat(messages),
+                    "tools": tools,
+                    "tool_choice": tool_choice if tools else None,
+                    "thinking": thinking,
+                    "chat_template_kwargs": template_kwargs,
+                    "temperature": temperature,
+                    "max_tokens": max_output_tokens or None,
+                    "n_ctx": n_ctx,
+                    "n_batch": n_batch,
+                    "gpu_layers": gpu_layers,
+                    "verbose": verbose,
+                }
+            )
+        )
+        return IO.NodeOutput(
+            response.text,
+            json.dumps(
+                [call.model_dump(mode="json", exclude_none=True) for call in response.tool_calls],
+                indent=2,
             ),
+            [*messages, response],
         )

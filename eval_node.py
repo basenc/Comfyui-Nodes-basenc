@@ -8,7 +8,7 @@ class Eval(IO.ComfyNode):
         return IO.Schema(
             node_id="Eval",
             display_name="Eval",
-            category="util",
+
             description="Evaluate a Python expression with the incoming value available as `x`.",
             inputs=[
                 IO.String.Input(
@@ -41,7 +41,8 @@ class Eval(IO.ComfyNode):
             "json": __import__("json"),
         }
         try:
-            result = eval(expression, {"__builtins__": __builtins__}, env)  # noqa: S307
+            # Evaluating Python is the purpose of this node.
+            result = eval(expression, {"__builtins__": __builtins__}, env)
         except Exception as exc:
             raise RuntimeError(f"Eval node error: {exc}") from exc
         return IO.NodeOutput(result)

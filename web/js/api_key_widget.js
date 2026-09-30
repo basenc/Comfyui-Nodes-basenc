@@ -25,10 +25,12 @@ function configureApiKey(node) {
 
   widget[CONFIGURED] = true;
   let internalUpdate = false;
+  let generation = 0;
 
   const secure = (value) => {
+    if (internalUpdate) return;
+    const requestGeneration = ++generation;
     if (
-      internalUpdate ||
       !value ||
       value === PENDING ||
       (URL.canParse(value) && new URL(value).protocol === "basenc-secret:")
@@ -43,12 +45,14 @@ function configureApiKey(node) {
 
     storeSecret(value).then(
       (reference) => {
+        if (requestGeneration !== generation) return;
         internalUpdate = true;
         widget.value = reference;
         internalUpdate = false;
         node.setDirtyCanvas(true, true);
       },
       (error) => {
+        if (requestGeneration !== generation) return;
         internalUpdate = true;
         widget.value = "";
         internalUpdate = false;

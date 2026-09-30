@@ -2,19 +2,15 @@ from typing import override
 
 from comfy_api.latest import ComfyExtension
 
+from . import ggml_backend as ggml_backend
 from . import api_routes as api_routes
-from .custom_openai_chat_completion import (
-    CustomOpenAICompletion,
-    CustomOpenAIResponse,
-    MessageAppend,
-)
-from .dimensions_preset_picker import DimensionsPresetPicker
 from .env_var_node import EnvVarNode
-from .eval_any import Eval
-from .json_path_select import JSONPathSelect
-from .llama_cpp_completion import LlamaCppCompletion, LlamaCppLora
-from .rescale_to_dimensions import RescaleToDimensions
-from .wan_video_size import WanVideoSize
+from .eval_node import Eval
+from .image_dimensions_node import ImageDimensions
+from .llama_cpp_completion_node import LlamaCppCompletion
+from .message_node import AddMessage
+from .openai_chat_node import OpenAIChatCompletion, OpenAIResponse
+
 
 WEB_DIRECTORY = "./web"
 
@@ -23,17 +19,13 @@ class CustomJsonOpenAIExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type]:
         return [
-            JSONPathSelect,
-            CustomOpenAIResponse,
-            CustomOpenAICompletion,
+            OpenAIResponse,
+            OpenAIChatCompletion,
             LlamaCppCompletion,
-            LlamaCppLora,
-            MessageAppend,
+            AddMessage,
             EnvVarNode,
             Eval,
-            WanVideoSize,
-            DimensionsPresetPicker,
-            RescaleToDimensions,
+            ImageDimensions,
         ]
 
 

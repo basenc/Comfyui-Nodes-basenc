@@ -1,7 +1,10 @@
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 from urllib.parse import quote, urlparse
 from uuid import uuid4
 
@@ -9,6 +12,7 @@ import folder_paths
 from cryptography.fernet import Fernet
 
 SECRET_SCHEME = "basenc-secret"
+_STORE_LOCK = Lock()
 
 
 def _store_directory() -> Path:
@@ -16,6 +20,15 @@ def _store_directory() -> Path:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.chmod(0o700)
     return directory
+
+
+@contextmanager
+def _locked_store():
+    path = _store_directory() / ".lock"
+    with _STORE_LOCK, path.open("a+b") as lock:
+        path.chmod(0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def _write_private(path: Path, content: bytes) -> None:
@@ -51,12 +64,13 @@ def store_secret(secret: str) -> str:
     if not secret:
         raise ValueError("API key cannot be empty.")
     identifier = uuid4().hex
-    secrets = _read_secrets()
-    secrets[identifier] = secret
-    _write_private(
-        _store_directory() / "api_keys.enc",
-        _fernet().encrypt(json.dumps(secrets).encode()),
-    )
+    with _locked_store():
+        secrets = _read_secrets()
+        secrets[identifier] = secret
+        _write_private(
+            _store_directory() / "api_keys.enc",
+            _fernet().encrypt(json.dumps(secrets).encode()),
+        )
     return f"{SECRET_SCHEME}://{identifier}#{quote(_masked(secret), safe='*')}"
 
 
@@ -64,7 +78,8 @@ def resolve_secret(value: str) -> str:
     reference = urlparse(value)
     if reference.scheme != SECRET_SCHEME:
         return value
-    secret = _read_secrets().get(reference.netloc)
+    with _locked_store():
+        secret = _read_secrets().get(reference.netloc)
     if secret is None:
         raise ValueError("The stored API key is unavailable on this ComfyUI instance.")
     return secret
