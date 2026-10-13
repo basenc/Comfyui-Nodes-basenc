@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import gc
+import logging
 import shlex
 import socket
 from collections.abc import AsyncIterator
@@ -106,6 +107,7 @@ async def _llama_server(
     comfy.model_management.unload_all_models()
     gc.collect()
     comfy.model_management.soft_empty_cache(force=True)
+    logging.info("+ %s", shlex.join(args))
     try:
         proc = await asyncio.create_subprocess_exec(*args)
     except FileNotFoundError as exc:
