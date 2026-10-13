@@ -73,7 +73,7 @@ def _choice_schema(
                 ),
             ),
         ],
-        outputs=_choice_outputs(["yes", "no"]),
+        outputs=_choice_outputs([]),
     )
 
 
