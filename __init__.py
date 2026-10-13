@@ -2,7 +2,7 @@ from typing import override
 
 from comfy_api.latest import ComfyExtension
 
-from . import ggml_backend as ggml_backend
+
 from . import api_routes as api_routes
 from .env_var_node import EnvVarNode
 from .eval_node import Eval

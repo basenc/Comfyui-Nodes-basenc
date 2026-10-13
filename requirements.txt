@@ -2,4 +2,4 @@ jmespath==1.1.0
 python-dotenv==1.2.3
 ai[openai]==0.7.0
 cryptography==50.0.1
-llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.35-cu132/llama_cpp_python-0.3.35-py3-none-manylinux_2_35_x86_64.whl#sha256=d00c66792ce4599c5b2f8e61b25632a248764fec8a0deed20ddf292e9b512917; sys_platform == "linux"
+pip==26.2.1

@@ -1,41 +1,23 @@
-import ctypes
+import asyncio
+import contextlib
 import gc
 import json
-from functools import cache
+import shlex
+import socket
+
 from pathlib import Path
-from typing import TypedDict
 
 import ai
 import comfy.model_management
 import folder_paths
-from ai.types import media
-from ai.types.usage import Usage
+from ai.providers.openai import OpenAIChatCompletionsProtocol
 from comfy_api.latest import IO
-from llama_cpp import Llama, llama_cpp
-from llama_cpp.llama_chat_format import MTMDChatHandler
 
 from .message_node import MESSAGES, Messages
-from .openai_chat_node import JsonValue, _parse_tools
+from .openai_chat_node import _parse_tools
 
 
-type ChatMessage = dict[str, JsonValue]
-type ChatTool = dict[str, JsonValue]
-
-
-class CompletionRequest(TypedDict):
-    model_path: str
-    mmproj_path: str | None
-    messages: list[ChatMessage]
-    tools: list[ChatTool]
-    tool_choice: str | None
-    thinking: bool
-    chat_template_kwargs: dict[str, JsonValue]
-    temperature: float
-    max_tokens: int | None
-    n_ctx: int
-    n_batch: int
-    gpu_layers: int
-    verbose: boolODEL_FOLDER = "basenc_llama_cpp_models"
+_MODEL_FOLDER = "basenc_llama_cpp_models"
 _MODELS_DIR = Path(folder_paths.models_dir)
 
 
@@ -72,152 +54,143 @@ def _model_options(mmproj: bool) -> list[str]:
     ]
 
 
-def _run_completion(request: CompletionRequest) -> dict[str, JsonValue]:
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+
+async def _wait_ready(
+    port: int,
+    proc: asyncio.subprocess.Process,
+) -> None:
+    import aiohttp
+
+    url = f"http://127.0.0.1:{port}/health"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            if proc.returncode is not None:
+                raise RuntimeError(
+                    f"llama-server exited with code {proc.returncode}"
+                )
+            try:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=1.0)
+                ) as response:
+                    body = await response.json()
+                    if response.status == 200 and body.get("status") == "ok":
+                        return
+            except (aiohttp.ClientError, TimeoutError, ValueError):
+                pass
+            await asyncio.sleep(0.2)
+
+
+async def _terminate(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+
+
+async def _run_llama_server(
+    *,
+    model_path: str,
+    mmproj_path: str | None,
+    n_ctx: int,
+    gpu_layers: int,
+    llama_server_args: str,
+    messages: Messages,
+    tools: list[ai.tools.Tool],
+    tool_choice: str,
+    temperature: float,
+    max_tokens: int | None,
+    extra_body: dict[str, object] | None,
+) -> ai.messages.Message:
+    port = _free_port()
+    args = [
+        "llama-server",
+        *shlex.split(llama_server_args),
+        "--model", model_path,
+        "--ctx-size", str(n_ctx),
+        "--n-gpu-layers", str(gpu_layers),
+
+        "--host", "127.0.0.1",
+        "--port", str(port),
+        "--no-webui",
+    ]
+    if mmproj_path:
+        args += ["--mmproj", mmproj_path]
+
     comfy.model_management.throw_exception_if_processing_interrupted()
     comfy.model_management.unload_all_models()
     gc.collect()
     comfy.model_management.soft_empty_cache(force=True)
-    with subprocess.Popen(
-        [sys.executable, str(Path(__file__).with_name("llama_cpp_worker.py"))],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-    ) as worker:
-        payload: bytes | None = json.dumps(request).encode()
+
+    try:
+        proc = await asyncio.create_subprocess_exec(*args)
+    except FileNotFoundError as exc:
+        raise RuntimeError("`llama-server` is not on PATH.") from exc
+
+    try:
+        await _wait_ready(port, proc)
+        provider = ai.get_provider(
+            "openai",
+            base_url=f"http://127.0.0.1:{port}/v1",
+            api_key="sk-noop",
+            protocol=OpenAIChatCompletionsProtocol(),
+        )
         try:
-            while True:
-                comfy.model_management.throw_exception_if_processing_interrupted()
-                try:
-                    output, _ = worker.communicate(input=payload, timeout=0.25)
-                    break
-                except subprocess.TimeoutExpired:
-                    payload = None
-        finally:
-            if worker.poll() is None:
-                worker.kill()
-                worker.communicate()
-        if worker.returncode:
-            raise RuntimeError(f"llama.cpp worker exited with code {worker.returncode}")
-    return json.loads(output)
-
-
-def _tool_result_content(value: JsonValue | ai.messages.ContentOutput) -> str:
-    """Convert an AI SDK tool result to one OpenAI tool-content string."""
-    if isinstance(value, ai.messages.ContentOutput):
-        raise TypeError("MTMD does not support multipart tool results.")
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, separators=(",", ":"), default=str)
-
-
-def _messages_to_openai_chat(messages: Messages) -> list[ChatMessage]:
-    """Bridge AI SDK messages to the OpenAI dictionaries required by llama-cpp-python."""
-    result: list[ChatMessage] = []
-    for message in messages:
-        if message.role == "system":
-            result.append({"role": "system", "content": message.text})
-        elif message.role == "user":
-            if message.files:
-                content: list[dict[str, JsonValue]] = []
-                for part in message.parts:
-                    if isinstance(part, ai.messages.TextPart):
-                        content.append({"type": "text", "text": part.text})
-                    elif isinstance(part, ai.messages.FilePart):
-                        if not part.media_type.startswith(
-                            ("image/", "audio/", "video/")
-                        ):
-                            raise ValueError(
-                                "MTMD messages support image, audio, and video file parts only."
-                            )
-                        content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": media.data_to_data_url(
-                                        part.data, part.media_type
-                                    )
-                                },
-                            }
+            async with ai.stream(
+                ai.Model(id=Path(model_path).name, provider=provider),
+                messages,
+                tools=tools or None,
+                params=ai.InferenceRequestParams(
+                    sampling={
+                        ai.TemperatureSamplerParams: ai.TemperatureSamplerParams(
+                            temperature=temperature
                         )
-                result.append({"role": "user", "content": content})
-            else:
-                result.append({"role": "user", "content": message.text})
-        elif message.role == "assistant":
-            assistant: ChatMessage = {"role": "assistant"}
-            if message.text:
-                assistant["content"] = message.text
-            if message.tool_calls:
-                assistant["tool_calls"] = [
-                    {
-                        "id": call.tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": call.tool_name,
-                            "arguments": call.tool_args,
-                        },
-                    }
-                    for call in message.tool_calls
-                ]
-            result.append(assistant)
-        elif message.role == "tool":
-            result.extend(
-                {
-                    "role": "tool",
-                    "tool_call_id": part.tool_call_id,
-                    "content": _tool_result_content(part.get_model_input()),
-                }
-                for part in message.tool_results
-            )
-    return result
-
-
-def _tools_to_openai_chat(tools: list[ai.tools.Tool]) -> list[ChatTool]:
-    """Convert AI SDK tool schemas to llama-cpp-python's function tools."""
-    result: list[ChatTool] = []
-    for tool in tools:
-        if tool.kind != "function" or tool.spec is None:
-            raise ValueError("Local chat generation supports function tools only.")
-        result.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.spec.description or "",
-                    "parameters": tool.spec.params,
-                },
-            }
-        )
-    return result
-
-
-def _assistant_message(
-    response: dict[str, JsonValue],
-) -> ai.messages.Message:
-    """Bridge a llama-cpp-python response back to an AI SDK message."""
-    raw = response["choices"][0]["message"]
-    parts: list[ai.messages.Part] = []
-    if raw.get("content"):
-        parts.append(ai.messages.TextPart(id="text", text=raw["content"]))
-    parts.extend(
-        ai.messages.ToolCallPart(
-            id=call["id"],
-            tool_call_id=call["id"],
-            tool_name=call["function"]["name"],
-            tool_args=call["function"]["arguments"],
-        )
-        for call in raw.get("tool_calls", [])
-    )
-    usage = response["usage"]
-    return ai.messages.Message(
-        role="assistant",
-        parts=parts,
-        usage=Usage(
-            input_tokens=usage["prompt_tokens"],
-            output_tokens=usage["completion_tokens"],
-            raw=dict(usage),
-        ),
-    )
+                    },
+                    output=(
+                        ai.OutputParams(max_tokens=max_tokens)
+                        if max_tokens is not None
+                        else None
+                    ),
+                    tool_calling=(
+                        ai.ToolCallingParams(
+                            tool_choice=ai.ToolChoiceMode(tool_choice)
+                        )
+                        if tools and tool_choice != "auto"
+                        else None
+                    ),
+                    extra_body=extra_body,
+                ),
+            ) as stream:
+                events = aiter(stream)
+                while True:
+                    comfy.model_management.throw_exception_if_processing_interrupted()
+                    next_event = asyncio.create_task(anext(events))
+                    try:
+                        while not next_event.done():
+                            await asyncio.wait({next_event}, timeout=0.25)
+                            comfy.model_management.throw_exception_if_processing_interrupted()
+                        await next_event
+                    except StopAsyncIteration:
+                        break
+                    finally:
+                        if not next_event.done():
+                            next_event.cancel()
+                        await asyncio.gather(next_event, return_exceptions=True)
+                return stream.message
+        finally:
+            await provider.aclose()
+    finally:
+        await _terminate(proc)
 
 
 class LlamaCppCompletion(IO.ComfyNode):
@@ -297,23 +270,22 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Text and media context size.",
                 ),
-                IO.Int.Input(
-                    "n_batch",
-                    default=512,
-                    min=1,
-                    max=2_147_483_647,
-                    optional=True,
-                    tooltip="Prompt processing batch size.",
-                ),
+
                 IO.Int.Input(
                     "gpu_layers",
-                    default=-1,
+                    default=24,
                     min=-1,
                     max=2_147_483_647,
                     optional=True,
-                    tooltip="-1 loads all to GPU",
+                    tooltip="Model layers on GPU; -1 loads all.",
                 ),
-                IO.Boolean.Input("verbose", default=False, optional=True),
+                IO.String.Input(
+                    "llama_server_args",
+                    default="",
+                    multiline=True,
+                    optional=True,
+                    tooltip="Extra llama-server flags. Quoting is supported; node flags take priority.",
+                ),
             ],
             outputs=[
                 IO.String.Output(
@@ -332,7 +304,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(
+    async def execute(
         cls,
         model: str,
         mmproj: str,
@@ -344,40 +316,38 @@ class LlamaCppCompletion(IO.ComfyNode):
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
         n_ctx: int = 8192,
-        n_batch: int = 512,
-        gpu_layers: int = -1,
-        verbose: bool = False,
+        gpu_layers: int = 24,
+        llama_server_args: str = "",
     ) -> IO.NodeOutput:
-        tools = _tools_to_openai_chat(_parse_tools(tools_json))
+        tools = _parse_tools(tools_json)
         template_kwargs = (
             json.loads(chat_template_kwargs) if chat_template_kwargs else {}
         )
         if not isinstance(template_kwargs, dict):
             raise TypeError("`chat_template_kwargs` must decode to a JSON object.")
+        if thinking:
+            template_kwargs.setdefault("enable_thinking", True)
         if mmproj == "None" and any(message.files for message in messages):
             raise ValueError("Media messages require an MTMD projector.")
-        response = _assistant_message(
-            _run_completion(
-                {
-                    "model_path": folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model),
-                    "mmproj_path": (
-                        None
-                        if mmproj == "None"
-                        else folder_paths.get_full_path_or_raise(_MODEL_FOLDER, mmproj)
-                    ),
-                    "messages": _messages_to_openai_chat(messages),
-                    "tools": tools,
-                    "tool_choice": tool_choice if tools else None,
-                    "thinking": thinking,
-                    "chat_template_kwargs": template_kwargs,
-                    "temperature": temperature,
-                    "max_tokens": max_output_tokens or None,
-                    "n_ctx": n_ctx,
-                    "n_batch": n_batch,
-                    "gpu_layers": gpu_layers,
-                    "verbose": verbose,
-                }
-            )
+        model_path = folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model)
+        response = await _run_llama_server(
+            model_path=model_path,
+            mmproj_path=(
+                None
+                if mmproj == "None"
+                else folder_paths.get_full_path_or_raise(_MODEL_FOLDER, mmproj)
+            ),
+            n_ctx=n_ctx,
+            gpu_layers=gpu_layers,
+            llama_server_args=llama_server_args,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_output_tokens or None,
+            extra_body={"chat_template_kwargs": template_kwargs}
+            if template_kwargs
+            else None,
         )
         return IO.NodeOutput(
             response.text,
