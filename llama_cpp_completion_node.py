@@ -21,6 +21,7 @@ async def _run_llama_server(
     n_ctx: str,
     gpu_layers: str,
     llama_server_args: str,
+    mtp_model: str,
     messages: Messages,
     tools: list[ai.tools.Tool],
     tool_choice: str,
@@ -34,6 +35,7 @@ async def _run_llama_server(
         n_ctx=n_ctx,
         gpu_layers=gpu_layers,
         llama_server_args=llama_server_args,
+        mtp_model=mtp_model,
     ) as api_base:
         provider = ai.get_provider(
             "openai",
@@ -104,6 +106,13 @@ class LlamaCppCompletion(IO.ComfyNode):
                     options=["None", *_model_options(mmproj=True)],
                     default="None",
                     tooltip="Optional MTMD projector. None runs text-only chat.",
+                ),
+                IO.Combo.Input(
+                    "mtp_model",
+                    options=["None", *_model_options(mmproj=False)],
+                    default="None",
+                    optional=True,
+                    tooltip="MTP draft GGUF. None disables MTP speculative decoding.",
                 ),
                 MESSAGES.Input(
                     "messages",
@@ -208,6 +217,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         n_ctx: str = "auto",
         gpu_layers: str = "auto",
         llama_server_args: str = "",
+        mtp_model: str = "None",
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         template_kwargs = (
@@ -230,6 +240,7 @@ class LlamaCppCompletion(IO.ComfyNode):
             n_ctx=n_ctx,
             gpu_layers=gpu_layers,
             llama_server_args=llama_server_args,
+            mtp_model=mtp_model,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
