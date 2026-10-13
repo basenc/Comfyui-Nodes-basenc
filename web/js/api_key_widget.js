@@ -1,7 +1,7 @@
 import { app } from "../../../../scripts/app.js";
 import { api } from "../../../../scripts/api.js";
 
-const NODE_TYPES = new Set(["CustomOpenAIResponse", "CustomOpenAICompletion"]);
+const NODE_TYPES = new Set(["CustomOpenAIResponse", "CustomOpenAICompletion", "TypeSafeChoice"]);
 const PENDING = "Storing API key...";
 const CONFIGURED = Symbol("basencApiKeyConfigured");
 

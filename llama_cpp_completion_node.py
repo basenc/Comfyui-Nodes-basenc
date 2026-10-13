@@ -1,10 +1,5 @@
 import asyncio
-import contextlib
-import gc
 import json
-import shlex
-import socket
-
 from pathlib import Path
 
 import ai
@@ -13,97 +8,18 @@ import folder_paths
 from ai.providers.openai import OpenAIChatCompletionsProtocol
 from comfy_api.latest import IO
 
+from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _model_options
 from .message_node import MESSAGES, Messages
 from .openai_chat_node import _parse_tools
 
-
-_MODEL_FOLDER = "basenc_llama_cpp_models"
-_MODELS_DIR = Path(folder_paths.models_dir)
-
-
-def _register_model_folders(
-    name: str,
-    extensions: set[str],
-    *folders: Path,
-) -> None:
-    for index, folder in enumerate(folders):
-        folder_paths.add_model_folder_path(
-            name,
-            str(folder),
-            is_default=index == 0,
-        )
-    folder_paths.folder_names_and_paths[name] = (
-        folder_paths.folder_names_and_paths[name][0],
-        extensions,
-    )
-
-
-_register_model_folders(
-    _MODEL_FOLDER,
-    {".gguf"},
-    _MODELS_DIR / "LLM",
-    _MODELS_DIR / "text_encoders",
-)
-
-
-def _model_options(mmproj: bool) -> list[str]:
-    return [
-        name
-        for name in folder_paths.get_filename_list(_MODEL_FOLDER)
-        if ("mmproj" in Path(name).name.casefold()) == mmproj
-    ]
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-
-async def _wait_ready(
-    port: int,
-    proc: asyncio.subprocess.Process,
-) -> None:
-    import aiohttp
-
-    url = f"http://127.0.0.1:{port}/health"
-    async with aiohttp.ClientSession() as session:
-        while True:
-            comfy.model_management.throw_exception_if_processing_interrupted()
-            if proc.returncode is not None:
-                raise RuntimeError(
-                    f"llama-server exited with code {proc.returncode}"
-                )
-            try:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=1.0)
-                ) as response:
-                    body = await response.json()
-                    if response.status == 200 and body.get("status") == "ok":
-                        return
-            except (aiohttp.ClientError, TimeoutError, ValueError):
-                pass
-            await asyncio.sleep(0.2)
-
-
-async def _terminate(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=10)
-    except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
 
 
 async def _run_llama_server(
     *,
     model_path: str,
     mmproj_path: str | None,
-    n_ctx: int,
-    gpu_layers: int,
+    n_ctx: str,
+    gpu_layers: str,
     llama_server_args: str,
     messages: Messages,
     tools: list[ai.tools.Tool],
@@ -112,36 +28,16 @@ async def _run_llama_server(
     max_tokens: int | None,
     extra_body: dict[str, object] | None,
 ) -> ai.messages.Message:
-    port = _free_port()
-    args = [
-        "llama-server",
-        *shlex.split(llama_server_args),
-        "--model", model_path,
-        "--ctx-size", str(n_ctx),
-        "--n-gpu-layers", str(gpu_layers),
-
-        "--host", "127.0.0.1",
-        "--port", str(port),
-        "--no-webui",
-    ]
-    if mmproj_path:
-        args += ["--mmproj", mmproj_path]
-
-    comfy.model_management.throw_exception_if_processing_interrupted()
-    comfy.model_management.unload_all_models()
-    gc.collect()
-    comfy.model_management.soft_empty_cache(force=True)
-
-    try:
-        proc = await asyncio.create_subprocess_exec(*args)
-    except FileNotFoundError as exc:
-        raise RuntimeError("`llama-server` is not on PATH.") from exc
-
-    try:
-        await _wait_ready(port, proc)
+    async with _llama_server(
+        model_path=model_path,
+        mmproj_path=mmproj_path,
+        n_ctx=n_ctx,
+        gpu_layers=gpu_layers,
+        llama_server_args=llama_server_args,
+    ) as api_base:
         provider = ai.get_provider(
             "openai",
-            base_url=f"http://127.0.0.1:{port}/v1",
+            base_url=f"{api_base}/v1",
             api_key="sk-noop",
             protocol=OpenAIChatCompletionsProtocol(),
         )
@@ -189,8 +85,6 @@ async def _run_llama_server(
                 return stream.message
         finally:
             await provider.aclose()
-    finally:
-        await _terminate(proc)
 
 
 class LlamaCppCompletion(IO.ComfyNode):
@@ -262,22 +156,18 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Max output tokens. 0 to use the remaining context.",
                 ),
-                IO.Int.Input(
+                IO.String.Input(
                     "n_ctx",
-                    default=8192,
-                    min=512,
-                    max=2_147_483_647,
+                    default="auto",
                     optional=True,
-                    tooltip="Text and media context size.",
+                    tooltip="Context size: auto fits available memory, or enter a token count.",
                 ),
 
-                IO.Int.Input(
+                IO.String.Input(
                     "gpu_layers",
-                    default=24,
-                    min=-1,
-                    max=2_147_483_647,
+                    default="auto",
                     optional=True,
-                    tooltip="Model layers on GPU; -1 loads all.",
+                    tooltip="GPU layers: auto, all, or a number. Memory fitting is enabled.",
                 ),
                 IO.String.Input(
                     "llama_server_args",
@@ -315,8 +205,8 @@ class LlamaCppCompletion(IO.ComfyNode):
         chat_template_kwargs: str = "{}",
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
-        n_ctx: int = 8192,
-        gpu_layers: int = 24,
+        n_ctx: str = "auto",
+        gpu_layers: str = "auto",
         llama_server_args: str = "",
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)

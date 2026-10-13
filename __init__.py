@@ -4,6 +4,7 @@ from comfy_api.latest import ComfyExtension
 
 
 from . import api_routes as api_routes
+from .choice_node import ChoiceCriteria, LlamaCppChoice, TypeSafeChoice
 from .env_var_node import EnvVarNode
 from .eval_node import Eval
 from .image_dimensions_node import ImageDimensions
@@ -22,6 +23,9 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             OpenAIResponse,
             OpenAIChatCompletion,
             LlamaCppCompletion,
+            TypeSafeChoice,
+            LlamaCppChoice,
+            ChoiceCriteria,
             AddMessage,
             EnvVarNode,
             Eval,
