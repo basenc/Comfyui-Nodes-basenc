@@ -83,6 +83,7 @@ async def _llama_server(
     gpu_layers: str,
     llama_server_args: str,
     mtp_model: str = "None",
+    thinking: bool = True,
 ) -> AsyncIterator[str]:
     port = _free_port()
     args = [
@@ -91,6 +92,7 @@ async def _llama_server(
         "--model", model_path,
         *(["--ctx-size", n_ctx] if n_ctx != "auto" else []),
         "--n-gpu-layers", gpu_layers,
+        "--reasoning", "on" if thinking else "off",
         "--fit", "on",
         "--host", "127.0.0.1",
         "--port", str(port),

@@ -6,6 +6,7 @@ from server import PromptServer
 
 from .choice_node import register_choice_outputs
 from .env_var_node import available_env_keys
+from .eval_node import register_eval_outputs
 from .secret_store import store_secret
 
 
@@ -33,3 +34,13 @@ class _ChoiceOutputs(BaseModel):
 async def choice_outputs(request: web.Request) -> web.Response:
     specs = TypeAdapter(list[_ChoiceOutputs]).validate_python(await request.json())
     return web.json_response([register_choice_outputs(spec.node_id, spec.count) for spec in specs])
+
+
+class _EvalOutputs(BaseModel):
+    count: int = Field(ge=1, le=255)
+
+
+@PromptServer.instance.routes.post("/basenc/eval_outputs")
+async def eval_outputs(request: web.Request) -> web.Response:
+    specs = TypeAdapter(list[_EvalOutputs]).validate_python(await request.json())
+    return web.json_response([register_eval_outputs(spec.count) for spec in specs])

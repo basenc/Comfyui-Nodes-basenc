@@ -13,7 +13,6 @@ from .message_node import MESSAGES, Messages
 from .openai_chat_node import _parse_tools
 
 
-
 async def _run_llama_server(
     *,
     model_path: str,
@@ -22,6 +21,7 @@ async def _run_llama_server(
     gpu_layers: str,
     llama_server_args: str,
     mtp_model: str,
+    thinking: bool,
     messages: Messages,
     tools: list[ai.tools.Tool],
     tool_choice: str,
@@ -36,6 +36,7 @@ async def _run_llama_server(
         gpu_layers=gpu_layers,
         llama_server_args=llama_server_args,
         mtp_model=mtp_model,
+        thinking=thinking,
     ) as api_base:
         provider = ai.get_provider(
             "openai",
@@ -137,7 +138,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "thinking",
                     default=True,
                     optional=True,
-                    tooltip="Pass enable_thinking to the model chat template.",
+                    tooltip="Set llama-server --reasoning on or off.",
                 ),
                 IO.String.Input(
                     "chat_template_kwargs",
@@ -180,7 +181,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                 ),
                 IO.String.Input(
                     "llama_server_args",
-                    default="",
+                    default="-ctk q8_0 -ctv q8_0",
                     multiline=True,
                     optional=True,
                     tooltip="Extra llama-server flags. Quoting is supported; node flags take priority.",
@@ -225,8 +226,6 @@ class LlamaCppCompletion(IO.ComfyNode):
         )
         if not isinstance(template_kwargs, dict):
             raise TypeError("`chat_template_kwargs` must decode to a JSON object.")
-        if thinking:
-            template_kwargs.setdefault("enable_thinking", True)
         if mmproj == "None" and any(message.files for message in messages):
             raise ValueError("Media messages require an MTMD projector.")
         model_path = folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model)
@@ -241,6 +240,7 @@ class LlamaCppCompletion(IO.ComfyNode):
             gpu_layers=gpu_layers,
             llama_server_args=llama_server_args,
             mtp_model=mtp_model,
+            thinking=thinking,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,
