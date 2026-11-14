@@ -82,7 +82,8 @@ async def _llama_server(
     n_ctx: str,
     gpu_layers: str,
     llama_server_args: str,
-    mtp_model: str = "None",
+    draft_model: str = "None",
+    spec_type: str = "draft-mtp",
     thinking: bool = True,
 ) -> AsyncIterator[str]:
     port = _free_port()
@@ -98,10 +99,10 @@ async def _llama_server(
         "--port", str(port),
         "--no-webui",
     ]
-    if mtp_model != "None":
+    if draft_model != "None":
         args += [
-            "--spec-type", "draft-mtp",
-            "--model-draft", folder_paths.get_full_path_or_raise(_MODEL_FOLDER, mtp_model),
+            "--spec-type", spec_type,
+            "--model-draft", folder_paths.get_full_path_or_raise(_MODEL_FOLDER, draft_model),
         ]
     if mmproj_path:
         args += ["--mmproj", mmproj_path]

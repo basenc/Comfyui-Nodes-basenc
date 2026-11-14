@@ -20,7 +20,8 @@ async def _run_llama_server(
     n_ctx: str,
     gpu_layers: str,
     llama_server_args: str,
-    mtp_model: str,
+    draft_model: str,
+    spec_type: str,
     thinking: bool,
     messages: Messages,
     tools: list[ai.tools.Tool],
@@ -35,7 +36,8 @@ async def _run_llama_server(
         n_ctx=n_ctx,
         gpu_layers=gpu_layers,
         llama_server_args=llama_server_args,
-        mtp_model=mtp_model,
+        draft_model=draft_model,
+        spec_type=spec_type,
         thinking=thinking,
     ) as api_base:
         provider = ai.get_provider(
@@ -109,11 +111,24 @@ class LlamaCppCompletion(IO.ComfyNode):
                     tooltip="Optional MTMD projector. None runs text-only chat.",
                 ),
                 IO.Combo.Input(
-                    "mtp_model",
+                    "draft_model",
                     options=["None", *_model_options(mmproj=False)],
                     default="None",
                     optional=True,
-                    tooltip="MTP draft GGUF. None disables MTP speculative decoding.",
+                    tooltip="Draft GGUF for speculative decoding. None disables it.",
+                ),
+                IO.Combo.Input(
+                    "spec_type",
+                    options=[
+                        "draft-mtp",
+                        "draft-dflash",
+                        "draft-eagle3",
+                        "draft-dspark",
+                        "draft-simple",
+                    ],
+                    default="draft-mtp",
+                    optional=True,
+                    tooltip="Speculative decoding type. Applies when a draft model is set.",
                 ),
                 MESSAGES.Input(
                     "messages",
@@ -218,7 +233,8 @@ class LlamaCppCompletion(IO.ComfyNode):
         n_ctx: str = "auto",
         gpu_layers: str = "auto",
         llama_server_args: str = "",
-        mtp_model: str = "None",
+        draft_model: str = "None",
+        spec_type: str = "draft-mtp",
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         template_kwargs = (
@@ -239,7 +255,8 @@ class LlamaCppCompletion(IO.ComfyNode):
             n_ctx=n_ctx,
             gpu_layers=gpu_layers,
             llama_server_args=llama_server_args,
-            mtp_model=mtp_model,
+            draft_model=draft_model,
+            spec_type=spec_type,
             thinking=thinking,
             messages=messages,
             tools=tools,
