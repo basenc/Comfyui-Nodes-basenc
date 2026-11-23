@@ -10,6 +10,7 @@ from .eval_node import Eval
 from .image_dimensions_node import ImageDimensions
 from .llama_cpp_completion_node import LlamaCppCompletion
 from .message_node import AddMessage
+from .tool_node import AddTool
 from .openai_chat_node import OpenAIChatCompletion, OpenAIResponse
 
 
@@ -27,6 +28,7 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             LlamaCppChoice,
             ChoiceCriteria,
             AddMessage,
+            AddTool,
             EnvVarNode,
             Eval,
             ImageDimensions,

@@ -8,7 +8,7 @@ import folder_paths
 from ai.providers.openai import OpenAIChatCompletionsProtocol
 from comfy_api.latest import IO
 
-from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _model_options
+from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
 from .message_node import MESSAGES, Messages
 from .openai_chat_node import _parse_tools
 
@@ -23,6 +23,8 @@ async def _run_llama_server(
     draft_model: str,
     spec_type: str,
     thinking: bool,
+    lora: str,
+    lora_strength: float,
     messages: Messages,
     tools: list[ai.tools.Tool],
     tool_choice: str,
@@ -39,6 +41,8 @@ async def _run_llama_server(
         draft_model=draft_model,
         spec_type=spec_type,
         thinking=thinking,
+        lora=lora,
+        lora_strength=lora_strength,
     ) as api_base:
         provider = ai.get_provider(
             "openai",
@@ -201,6 +205,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Extra llama-server flags. Quoting is supported; node flags take priority.",
                 ),
+                *_lora_inputs(),
             ],
             outputs=[
                 IO.String.Output(
@@ -235,6 +240,8 @@ class LlamaCppCompletion(IO.ComfyNode):
         llama_server_args: str = "",
         draft_model: str = "None",
         spec_type: str = "draft-mtp",
+        lora: str = "None",
+        lora_strength: float = 1.0,
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         template_kwargs = (
@@ -258,6 +265,8 @@ class LlamaCppCompletion(IO.ComfyNode):
             draft_model=draft_model,
             spec_type=spec_type,
             thinking=thinking,
+            lora=lora,
+            lora_strength=lora_strength,
             messages=messages,
             tools=tools,
             tool_choice=tool_choice,

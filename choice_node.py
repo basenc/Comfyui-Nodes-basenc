@@ -13,7 +13,7 @@ from comfy_api_nodes.util.conversions import tensor_to_data_uri
 from torch import Tensor
 from typesafe_sdk import AsyncTypeSafeClient, Choice
 
-from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _model_options
+from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
 from .secret_store import resolve_secret
 
 
@@ -149,7 +149,7 @@ class TypeSafeChoice(IO.ComfyNode):
 class LlamaCppChoice(IO.ComfyNode):
     @classmethod
     def define_schema(cls) -> IO.Schema:
-        return _choice_schema(
+        schema = _choice_schema(
             "LlamaCppChoice",
             "llama.cpp Choice",
             [
@@ -186,6 +186,8 @@ class LlamaCppChoice(IO.ComfyNode):
                 ),
             ],
         )
+        schema.inputs.extend(_lora_inputs())
+        return schema
 
     @classmethod
     async def execute(
@@ -199,6 +201,8 @@ class LlamaCppChoice(IO.ComfyNode):
         llama_server_args: str = "",
         mmproj: str = "None",
         images: dict[str, Tensor] | None = None,
+        lora: str = "None",
+        lora_strength: float = 1.0,
     ) -> IO.NodeOutput:
         question = Choice.model_validate({"instructions": instructions, "criteria": json.loads(choices)})
         model_path = folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model)
@@ -210,6 +214,8 @@ class LlamaCppChoice(IO.ComfyNode):
             n_ctx=n_ctx,
             gpu_layers=gpu_layers,
             llama_server_args=llama_server_args,
+            lora=lora,
+            lora_strength=lora_strength,
         ) as api_base:
             return await _request_choice(api_base, "sk-noop", Path(model_path).name, state, question, images)
 

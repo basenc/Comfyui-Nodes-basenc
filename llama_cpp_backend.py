@@ -4,12 +4,16 @@ import gc
 import logging
 import shlex
 import socket
+from stat import S_ISREG
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import aiohttp
 import comfy.model_management
 import folder_paths
+from comfy_api.latest import IO
+
+from .gguf_metadata import is_lora
 
 _MODEL_FOLDER = "basenc_llama_cpp_models"
 _MODELS_DIR = Path(folder_paths.models_dir)
@@ -30,6 +34,42 @@ _register_model_folders(
     _MODELS_DIR / "LLM",
     _MODELS_DIR / "text_encoders",
 )
+
+
+def _lora_files() -> dict[str, Path]:
+    roots = {_MODELS_DIR: ""}
+    for category, (folders, _) in folder_paths.folder_names_and_paths.items():
+        if category not in {"custom_nodes", "datasets"}:
+            for index, root in enumerate(map(Path, folders)):
+                if not root.is_relative_to(_MODELS_DIR):
+                    roots.setdefault(root, f"{category}/{index + 1}")
+    adapters: dict[str, Path] = {}
+    legacy: dict[str, str] = {}
+    lora_roots = list(map(Path, folder_paths.get_folder_paths("loras")))
+    for root, prefix in roots.items():
+        for filename in folder_paths.recursive_search(str(root), [".git"])[0]:
+            path = root / filename
+            with contextlib.suppress(FileNotFoundError, PermissionError):
+                stat = path.stat()
+                if S_ISREG(stat.st_mode) and is_lora(path, stat.st_mtime_ns, stat.st_size):
+                    name = str(Path(prefix) / filename)
+                    adapters[name] = path
+                    for lora_root in lora_roots:
+                        if path.is_relative_to(lora_root):
+                            legacy.setdefault(str(path.relative_to(lora_root)), name)
+                            break
+    for alias, name in legacy.items():
+        if alias not in adapters:
+            adapters[alias] = adapters.pop(name)
+    return adapters
+
+
+def _lora_inputs() -> list[IO.Combo.Input | IO.Float.Input]:
+    return [
+        IO.Combo.Input("lora", options=["None", *sorted(_lora_files())],
+                       default="None", optional=True, tooltip="LoRA adapters identified by GGUF metadata across model folders."),
+        IO.Float.Input("lora_strength", default=1.0, min=-20.0, max=20.0, step=0.05, optional=True),
+    ]
 
 
 def _model_options(mmproj: bool) -> list[str]:
@@ -85,6 +125,8 @@ async def _llama_server(
     draft_model: str = "None",
     spec_type: str = "draft-mtp",
     thinking: bool = True,
+    lora: str = "None",
+    lora_strength: float = 1.0,
 ) -> AsyncIterator[str]:
     port = _free_port()
     args = [
@@ -99,6 +141,12 @@ async def _llama_server(
         "--port", str(port),
         "--no-webui",
     ]
+    if lora != "None":
+        adapters = _lora_files()
+        if lora not in adapters:
+            raise ValueError(f"No GGUF LoRA adapter found for {lora!r}. Refresh the model list.")
+        adapter = adapters[lora]
+        args += ["--lora-scaled", f"{adapter}:{lora_strength}"]
     if draft_model != "None":
         args += [
             "--spec-type", spec_type,
