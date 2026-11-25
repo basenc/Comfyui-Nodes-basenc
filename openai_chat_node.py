@@ -11,7 +11,7 @@ from ai.types import media as ai_media
 from comfy_api.latest import IO
 from dotenv import find_dotenv, load_dotenv
 
-from .message_node import MESSAGES, Messages
+from .message_node import MESSAGES, Messages, print_message
 from .secret_store import resolve_secret
 
 load_dotenv(find_dotenv())
@@ -109,6 +109,13 @@ class _OpenAINode(IO.ComfyNode):
                 IO.Float.Input(
                     "temperature", default=1.0, min=0.0, max=2.0, step=0.01, optional=True
                 ),
+                *([
+                    IO.Int.Input(
+                        "seed", default=0, min=0, max=0xFFFFFFFE,
+                        control_after_generate=True, optional=True,
+                        tooltip="Sampling seed. Repeatability depends on the model.",
+                    )
+                ] if cls.protocol is OpenAIChatCompletionsProtocol else []),
                 IO.Int.Input(
                     "n_ctx",
                     default=0,
@@ -148,6 +155,7 @@ class _OpenAINode(IO.ComfyNode):
         extra_body: str = "{}",
         reasoning_effort: str = "default",
         enable_reasoning: bool = True,
+        seed: int | None = None,
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         body: dict[str, JsonValue] = {
@@ -180,7 +188,9 @@ class _OpenAINode(IO.ComfyNode):
                     sampling={
                         ai.TemperatureSamplerParams: ai.TemperatureSamplerParams(
                             temperature=temperature
-                        )
+                        ),
+                        **({ai.SeedSamplerParams: ai.SeedSamplerParams(seed=seed)}
+                           if seed is not None else {}),
                     },
 
                     output=(
@@ -214,7 +224,7 @@ class _OpenAINode(IO.ComfyNode):
                 message = stream.message
         finally:
             await provider.aclose()
-        print(message.text, flush=True)
+        print_message(message)
         return IO.NodeOutput(
             message.text,
             json.dumps(

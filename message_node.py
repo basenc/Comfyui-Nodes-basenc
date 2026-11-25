@@ -1,3 +1,5 @@
+import json
+
 import ai
 from comfy_api.latest import IO
 from comfy_api_nodes.util.conversions import (
@@ -11,6 +13,45 @@ from torch import Tensor
 type Messages = list[ai.messages.Message]
 
 MESSAGES = IO.Custom("BASENC_MESSAGES")
+
+
+type _Json = str | int | float | bool | None | list[_Json] | dict[str, _Json]
+
+
+def _console_value(value: _Json | bytes) -> _Json:
+    if isinstance(value, dict):
+        if value.get("kind") == "file":
+            return "[file omitted]"
+        return {
+            key: _console_value(item) for key, item in value.items()
+            if key not in {"id", "ids", "trace", "traces", "traceback", "provider_metadata"}
+            and not key.endswith(("_id", "_ids"))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_console_value(item) for item in value]
+    if isinstance(value, bytes) or (isinstance(value, str) and value.startswith("data:")):
+        return "[file omitted]"
+    return value
+
+
+def print_message(message: ai.messages.Message) -> None:
+    fields = {"kind", "text", "tool_name", "tool_args", "result", "is_error",
+              "hook_type", "status"}
+    parts = []
+    for part in message.parts:
+        if part.kind == "file":
+            continue
+        view = part.model_dump(mode="python", include=fields, exclude_none=True)
+        if args := view.get("tool_args"):
+            try:
+                view["tool_args"] = json.loads(args)
+            except json.JSONDecodeError:
+                pass  # Built-in tools can use plain text instead of JSON.
+        parts.append(_console_value(view))
+    output: dict[str, _Json] = {"role": message.role, "parts": parts}
+    if message.usage is not None:
+        output["usage"] = message.usage.model_dump(exclude={"raw"}, exclude_none=True)
+    print(json.dumps(output, indent=2, default=lambda _: "[non-JSON value omitted]"), flush=True)
 
 
 class AddMessage(IO.ComfyNode):

@@ -9,8 +9,8 @@ from ai.providers.openai import OpenAIChatCompletionsProtocol
 from comfy_api.latest import IO
 
 from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
-from .message_node import MESSAGES, Messages
-from .openai_chat_node import JsonValue, _EFFORT_LEVELS, _parse_tools
+from .message_node import MESSAGES, Messages, print_message
+from .openai_chat_node import JsonValue, _parse_tools
 
 
 async def _run_llama_server(
@@ -23,6 +23,7 @@ async def _run_llama_server(
     draft_model: str,
     spec_type: str,
     thinking: bool,
+    reasoning_effort: str,
     lora: str,
     lora_strength: float,
     messages: Messages,
@@ -41,6 +42,7 @@ async def _run_llama_server(
         draft_model=draft_model,
         spec_type=spec_type,
         thinking=thinking,
+        reasoning_effort=reasoning_effort,
         lora=lora,
         lora_strength=lora_strength,
     ) as api_base:
@@ -161,10 +163,13 @@ class LlamaCppCompletion(IO.ComfyNode):
                 ),
                 IO.Combo.Input(
                     "reasoning_effort",
-                    options=_EFFORT_LEVELS,
+                    options=[
+                        "default", "none", "minimal", "low", "medium",
+                        "high", "xhigh", "max",
+                    ],
                     default="default",
                     optional=True,
-                    tooltip="Supported levels depend on the model's chat template.",
+                    tooltip="Set --reasoning-effort. None turns reasoning off.",
                 ),
                 IO.String.Input(
                     "chat_template_kwargs",
@@ -183,6 +188,11 @@ class LlamaCppCompletion(IO.ComfyNode):
                     step=0.01,
                     optional=True,
                     tooltip="Sampling temperature.",
+                ),
+                IO.Int.Input(
+                    "seed", default=0, min=0, max=0xFFFFFFFE,
+                    control_after_generate=True, optional=True,
+                    tooltip="Sampling seed for llama-server.",
                 ),
                 IO.Int.Input(
                     "max_output_tokens",
@@ -250,6 +260,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         lora: str = "None",
         lora_strength: float = 1.0,
         reasoning_effort: str = "default",
+        seed: int | None = None,
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         template_kwargs = (
@@ -273,6 +284,7 @@ class LlamaCppCompletion(IO.ComfyNode):
             draft_model=draft_model,
             spec_type=spec_type,
             thinking=thinking,
+            reasoning_effort=reasoning_effort,
             lora=lora,
             lora_strength=lora_strength,
             messages=messages,
@@ -282,10 +294,10 @@ class LlamaCppCompletion(IO.ComfyNode):
             max_tokens=max_output_tokens or None,
             extra_body={
                 **({"chat_template_kwargs": template_kwargs} if template_kwargs else {}),
-                **({"reasoning_effort": reasoning_effort} if reasoning_effort != "default" else {}),
+                **({"seed": seed} if seed is not None else {}),
             } or None,
         )
-        print(response.text, flush=True)
+        print_message(response)
         return IO.NodeOutput(
             response.text,
             json.dumps(

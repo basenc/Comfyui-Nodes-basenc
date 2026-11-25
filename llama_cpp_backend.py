@@ -125,6 +125,7 @@ async def _llama_server(
     draft_model: str = "None",
     spec_type: str = "draft-mtp",
     thinking: bool = True,
+    reasoning_effort: str = "default",
     lora: str = "None",
     lora_strength: float = 1.0,
 ) -> AsyncIterator[str]:
@@ -135,7 +136,9 @@ async def _llama_server(
         "--model", model_path,
         *(["--ctx-size", n_ctx] if n_ctx != "auto" else []),
         "--n-gpu-layers", gpu_layers,
-        "--reasoning", "on" if thinking else "off",
+        "--reasoning", "on" if thinking and reasoning_effort != "none" else "off",
+        *(["--reasoning-effort", reasoning_effort]
+          if thinking and reasoning_effort not in {"default", "none"} else []),
         "--fit", "on",
         "--host", "127.0.0.1",
         "--port", str(port),
