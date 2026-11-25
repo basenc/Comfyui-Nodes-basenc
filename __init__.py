@@ -9,7 +9,7 @@ from .env_var_node import EnvVarNode
 from .eval_node import Eval
 from .image_dimensions_node import ImageDimensions
 from .llama_cpp_completion_node import LlamaCppCompletion
-from .memory_purge_node import PurgeRAM, PurgeVRAM
+from .memory_purge_node import PurgeVRAM
 from .message_node import AddMessage
 from .tool_node import AddTool
 from .openai_chat_node import OpenAIChatCompletion, OpenAIResponse
@@ -33,7 +33,6 @@ class CustomJsonOpenAIExtension(ComfyExtension):
             EnvVarNode,
             Eval,
             ImageDimensions,
-            PurgeRAM,
             PurgeVRAM,
         ]
 

@@ -10,7 +10,7 @@ from comfy_api.latest import IO
 
 from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
 from .message_node import MESSAGES, Messages
-from .openai_chat_node import _parse_tools
+from .openai_chat_node import JsonValue, _EFFORT_LEVELS, _parse_tools
 
 
 async def _run_llama_server(
@@ -30,7 +30,7 @@ async def _run_llama_server(
     tool_choice: str,
     temperature: float,
     max_tokens: int | None,
-    extra_body: dict[str, object] | None,
+    extra_body: dict[str, JsonValue] | None,
 ) -> ai.messages.Message:
     async with _llama_server(
         model_path=model_path,
@@ -159,6 +159,13 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Set llama-server --reasoning on or off.",
                 ),
+                IO.Combo.Input(
+                    "reasoning_effort",
+                    options=_EFFORT_LEVELS,
+                    default="default",
+                    optional=True,
+                    tooltip="Supported levels depend on the model's chat template.",
+                ),
                 IO.String.Input(
                     "chat_template_kwargs",
                     default="{}",
@@ -242,6 +249,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         spec_type: str = "draft-mtp",
         lora: str = "None",
         lora_strength: float = 1.0,
+        reasoning_effort: str = "default",
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
         template_kwargs = (
@@ -272,10 +280,12 @@ class LlamaCppCompletion(IO.ComfyNode):
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_output_tokens or None,
-            extra_body={"chat_template_kwargs": template_kwargs}
-            if template_kwargs
-            else None,
+            extra_body={
+                **({"chat_template_kwargs": template_kwargs} if template_kwargs else {}),
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort != "default" else {}),
+            } or None,
         )
+        print(response.text, flush=True)
         return IO.NodeOutput(
             response.text,
             json.dumps(

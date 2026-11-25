@@ -18,6 +18,10 @@ load_dotenv(find_dotenv())
 
 type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
+_EFFORT_LEVELS = [
+    "default", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+]
+
 # ai 0.5.0 recognizes video FileParts but omits the Responses input_video mapping.
 _file_part_to_responses = openai_protocol._file_part_to_responses
 async def _file_part_to_responses_with_video(
@@ -89,6 +93,19 @@ class _OpenAINode(IO.ComfyNode):
                     default="auto",
                     optional=True,
                 ),
+                IO.Boolean.Input(
+                    "enable_reasoning",
+                    default=True,
+                    optional=True,
+                    tooltip="Off requests no reasoning. On uses the effort below.",
+                ),
+                IO.Combo.Input(
+                    "reasoning_effort",
+                    options=_EFFORT_LEVELS,
+                    default="default",
+                    optional=True,
+                    tooltip="Default lets the model choose the effort.",
+                ),
                 IO.Float.Input(
                     "temperature", default=1.0, min=0.0, max=2.0, step=0.01, optional=True
                 ),
@@ -129,8 +146,19 @@ class _OpenAINode(IO.ComfyNode):
         n_ctx: int = 0,
         tool_choice: str = "auto",
         extra_body: str = "{}",
+        reasoning_effort: str = "default",
+        enable_reasoning: bool = True,
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
+        body: dict[str, JsonValue] = {
+            **(json.loads(extra_body) if extra_body else {}),
+            **({"n_ctx": n_ctx} if n_ctx else {}),
+        }
+        reasoning = ai.ReasoningParams()
+        if not enable_reasoning or reasoning_effort == "none":
+            reasoning = ai.ReasoningParams(effort=None)
+        elif reasoning_effort != "default":
+            reasoning = ai.ReasoningParams(effort=reasoning_effort)
         provider = ai.get_provider(
             "openai",
             base_url=api_base,
@@ -148,6 +176,7 @@ class _OpenAINode(IO.ComfyNode):
                 messages,
                 tools=tools or None,
                 params=ai.InferenceRequestParams(
+                    reasoning=reasoning,
                     sampling={
                         ai.TemperatureSamplerParams: ai.TemperatureSamplerParams(
                             temperature=temperature
@@ -164,10 +193,7 @@ class _OpenAINode(IO.ComfyNode):
                         if tools and tool_choice != "auto"
                         else None
                     ),
-                    extra_body={
-                        **(json.loads(extra_body) if extra_body else {}),
-                        **({"n_ctx": n_ctx} if n_ctx else {}),
-                    } or None,
+                    extra_body=body or None,
                 ),
             ) as stream:
                 events = aiter(stream)
@@ -188,6 +214,7 @@ class _OpenAINode(IO.ComfyNode):
                 message = stream.message
         finally:
             await provider.aclose()
+        print(message.text, flush=True)
         return IO.NodeOutput(
             message.text,
             json.dumps(

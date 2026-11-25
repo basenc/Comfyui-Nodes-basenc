@@ -24,9 +24,9 @@ class PurgeVRAM(IO.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, anything: Any = None) -> IO.NodeOutput:
+    def execute(cls, **inputs: Any) -> IO.NodeOutput:
         comfy.model_management.unload_all_models()
         # Release model and tensor references before emptying the caches.
         gc.collect()
         comfy.model_management.soft_empty_cache(force=True)
-        return IO.NodeOutput(anything)
+        return IO.NodeOutput(inputs.get("*"))
