@@ -13,7 +13,9 @@ from comfy_api_nodes.util.conversions import tensor_to_data_uri
 from torch import Tensor
 from typesafe_sdk import AsyncTypeSafeClient, Choice
 
-from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
+from .llama_cpp_backend import (
+    _MODEL_FOLDER, _llama_args_input, _llama_server, _lora_inputs, _model_options,
+)
 from .secret_store import resolve_secret
 
 
@@ -175,15 +177,9 @@ class LlamaCppChoice(IO.ComfyNode):
                     "gpu_layers",
                     default="auto",
                     optional=True,
-                    tooltip="GPU layers: auto, all, or a number. Memory fitting is enabled.",
+                    tooltip="GPU layers: auto, all, or a number. With both sizes on auto, pass --fit on.",
                 ),
-                IO.String.Input(
-                    "llama_server_args",
-                    default="",
-                    multiline=True,
-                    optional=True,
-                    tooltip="Extra llama-server flags. Quoting is supported; node flags take priority.",
-                ),
+                _llama_args_input(),
             ],
         )
         schema.inputs.extend(_lora_inputs())
@@ -198,7 +194,7 @@ class LlamaCppChoice(IO.ComfyNode):
         choices: str,
         n_ctx: str = "auto",
         gpu_layers: str = "auto",
-        llama_server_args: str = "",
+        llama_server_args: str = "[]",
         mmproj: str = "None",
         images: dict[str, Tensor] | None = None,
         lora: str = "None",

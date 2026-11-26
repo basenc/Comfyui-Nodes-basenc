@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import gc
+import json
 import logging
 import shlex
 import socket
@@ -12,6 +13,7 @@ import aiohttp
 import comfy.model_management
 import folder_paths
 from comfy_api.latest import IO
+from pydantic import TypeAdapter
 
 from .gguf_metadata import is_lora
 
@@ -70,6 +72,35 @@ def _lora_inputs() -> list[IO.Combo.Input | IO.Float.Input]:
                        default="None", optional=True, tooltip="LoRA adapters identified by GGUF metadata across model folders."),
         IO.Float.Input("lora_strength", default=1.0, min=-20.0, max=20.0, step=0.05, optional=True),
     ]
+
+
+_ARG_ROWS = TypeAdapter(list[tuple[str, str]])
+
+
+def _llama_args_input(*rows: tuple[str, str]) -> IO.String.Input:
+    field = IO.String.Input(
+        "llama_server_args", default=json.dumps(rows), optional=True,
+        socketless=True,
+        tooltip="Appended in row order. Leave the value empty for a bare flag. "
+                "The node manages --host, --port, and --parallel (-np).",
+    )
+    field.widget_type = "BASENC_LLAMA_ARGS"
+    return field
+
+
+def _custom_args(rows: str) -> list[str]:
+    args: list[str] = []
+    for key, value in _ARG_ROWS.validate_json(rows):
+        key = key.strip()
+        if not key and not value:
+            continue
+        if (not key.startswith("-") or key in {"-", "--"}
+                or any(map(str.isspace, key)) or "=" in key):
+            raise ValueError("Enter one llama-server flag as the key and its value separately.")
+        args.extend((key, value) if value else (key,))
+    if any(arg.partition("=")[0] in {"--host", "--port", "--parallel", "-np"} for arg in args):
+        raise ValueError("The node manages llama-server --host, --port, and --parallel (-np).")
+    return args
 
 
 def _model_options(mmproj: bool) -> list[str]:
@@ -132,17 +163,19 @@ async def _llama_server(
     port = _free_port()
     args = [
         "llama-server",
-        *shlex.split(llama_server_args),
         "--model", model_path,
+        "--flash-attn", "on",
         *(["--ctx-size", n_ctx] if n_ctx != "auto" else []),
         "--n-gpu-layers", gpu_layers,
         "--reasoning", "on" if thinking and reasoning_effort != "none" else "off",
         *(["--reasoning-effort", reasoning_effort]
           if thinking and reasoning_effort not in {"default", "none"} else []),
-        "--fit", "on",
+        *(["--fit", "on"] if n_ctx == gpu_layers == "auto" else []),
         "--host", "127.0.0.1",
         "--port", str(port),
-        "--no-webui",
+        "--parallel", "1",
+        "--no-ui",
+        "--cors-origins", "localhost",
     ]
     if lora != "None":
         adapters = _lora_files()
@@ -157,6 +190,7 @@ async def _llama_server(
         ]
     if mmproj_path:
         args += ["--mmproj", mmproj_path]
+    args.extend(_custom_args(llama_server_args))
     comfy.model_management.throw_exception_if_processing_interrupted()
     comfy.model_management.unload_all_models()
     gc.collect()

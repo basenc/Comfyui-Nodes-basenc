@@ -8,7 +8,9 @@ import folder_paths
 from ai.providers.openai import OpenAIChatCompletionsProtocol
 from comfy_api.latest import IO
 
-from .llama_cpp_backend import _MODEL_FOLDER, _llama_server, _lora_inputs, _model_options
+from .llama_cpp_backend import (
+    _MODEL_FOLDER, _llama_args_input, _llama_server, _lora_inputs, _model_options,
+)
 from .message_node import MESSAGES, Messages, print_message
 from .openai_chat_node import JsonValue, _parse_tools
 
@@ -171,15 +173,7 @@ class LlamaCppCompletion(IO.ComfyNode):
                     optional=True,
                     tooltip="Set --reasoning-effort. None turns reasoning off.",
                 ),
-                IO.String.Input(
-                    "chat_template_kwargs",
-                    default="{}",
-                    multiline=True,
-                    optional=True,
-                    socketless=False,
-                    force_input=False,
-                    tooltip="Additional GGUF chat-template variables as a JSON object.",
-                ),
+
                 IO.Float.Input(
                     "temperature",
                     default=1.0,
@@ -213,15 +207,9 @@ class LlamaCppCompletion(IO.ComfyNode):
                     "gpu_layers",
                     default="auto",
                     optional=True,
-                    tooltip="GPU layers: auto, all, or a number. Memory fitting is enabled.",
+                    tooltip="GPU layers: auto, all, or a number. With both sizes on auto, pass --fit on.",
                 ),
-                IO.String.Input(
-                    "llama_server_args",
-                    default="-ctk q8_0 -ctv q8_0",
-                    multiline=True,
-                    optional=True,
-                    tooltip="Extra llama-server flags. Quoting is supported; node flags take priority.",
-                ),
+                _llama_args_input(("-ctk", "q8_0"), ("-ctv", "q8_0")),
                 *_lora_inputs(),
             ],
             outputs=[
@@ -249,12 +237,12 @@ class LlamaCppCompletion(IO.ComfyNode):
         tools_json: str = "[]",
         tool_choice: str = "auto",
         thinking: bool = True,
-        chat_template_kwargs: str = "{}",
+
         temperature: float = 1.0,
         max_output_tokens: int = 1024,
         n_ctx: str = "auto",
         gpu_layers: str = "auto",
-        llama_server_args: str = "",
+        llama_server_args: str = "[]",
         draft_model: str = "None",
         spec_type: str = "draft-mtp",
         lora: str = "None",
@@ -263,11 +251,7 @@ class LlamaCppCompletion(IO.ComfyNode):
         seed: int | None = None,
     ) -> IO.NodeOutput:
         tools = _parse_tools(tools_json)
-        template_kwargs = (
-            json.loads(chat_template_kwargs) if chat_template_kwargs else {}
-        )
-        if not isinstance(template_kwargs, dict):
-            raise TypeError("`chat_template_kwargs` must decode to a JSON object.")
+
         if mmproj == "None" and any(message.files for message in messages):
             raise ValueError("Media messages require an MTMD projector.")
         model_path = folder_paths.get_full_path_or_raise(_MODEL_FOLDER, model)
@@ -292,10 +276,7 @@ class LlamaCppCompletion(IO.ComfyNode):
             tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_output_tokens or None,
-            extra_body={
-                **({"chat_template_kwargs": template_kwargs} if template_kwargs else {}),
-                **({"seed": seed} if seed is not None else {}),
-            } or None,
+            extra_body={"seed": seed} if seed is not None else None,
         )
         print_message(response)
         return IO.NodeOutput(
